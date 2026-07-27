@@ -253,13 +253,13 @@ export const REPORT_FORMATS: ReportFormat[] = [
     kind: "itv_master",
     icon: "🚛",
     status: "ready",
-    blurb: "The fleet list — call signs, registrations, vendor, tags. A 'scanning-only' tag becomes a hard rule.",
-    columns: ["Call sign", "Registration", "Vendor", "Tags", "Driver"],
+    blurb: "The fleet register — internal no (call sign), number plate, vendor, status, driver. An 'Inactive' status is skipped; a 'scanning' remark becomes a hard rule.",
+    columns: ["Sr", "Vendor", "Number Plate", "Internal No", "Status", "Driver Name", "Remarks"],
     template: [
-      ["Call sign", "Registration", "Vendor", "Tags", "Driver"],
-      ["A333", "GJ12AB1234", "Active", "scanning-only", "Ramesh Yadav"],
-      ["A157", "GJ12AB5678", "Active", "", "Sohan Bharwad"],
-      ["7118", "GJ12CD9012", "SSPL", "high-capacity", ""],
+      ["Sr", "Vendor", "Number Plate", "Internal No", "Status", "Driver Name", "Remarks"],
+      ["1", "Activ", "GJ12AT8961", "A061", "Active", "Ramesh Yadav", ""],
+      ["2", "Activ", "GJ12AU8972", "A072", "Active", "Sohan Bharwad", "scanning-only"],
+      ["3", "SSPL", "GJ12CD9012", "7118", "Inactive", "", ""],
     ],
   },
   {
@@ -455,15 +455,20 @@ export function extractContainersDiag(
 
 export function extractVehicles(sheet: ParsedSheet): ImportedVehicle[] {
   const headers = sheet.rows[0];
-  const idCol = findCol(headers, ["callsign", "itvno", "itv", "vehicleno", "vehicle", "truck"]);
-  const regCol = findCol(headers, ["registration", "regno", "reg"]);
+  // "Internal No" (A061) is the fleet call sign / id; "Number Plate" (GJ12AT8961) is the registration.
+  const idCol = findCol(headers, ["internalno", "internal", "callsign", "itvno", "itv", "vehicleno", "vehicle", "truck"]);
+  const regCol = findCol(headers, ["numberplate", "plate", "registration", "regno", "reg"]);
   const venCol = findCol(headers, ["vendor", "transporter", "company"]);
   const tagCol = findCol(headers, ["tag", "purpose", "capacity", "type", "remark"]);
   const drvCol = findCol(headers, ["drivername", "driver"]);
+  const statusCol = findCol(headers, ["status", "active"]);
   if (idCol < 0 && regCol < 0) return [];
   return sheet.rows.slice(1).flatMap((r) => {
     const id = (idCol >= 0 ? r[idCol] : "") || (regCol >= 0 ? r[regCol].slice(-4) : "");
     if (!id) return [];
+    // An "Inactive"/"Retired" ITV in the master is not part of the live fleet — skip it.
+    const status = statusCol >= 0 ? r[statusCol] : "";
+    if (status && /inactive|retired|off|disable|scrap/i.test(status)) return [];
     return [{
       id: id.toUpperCase(),
       reg: regCol >= 0 ? r[regCol] || undefined : undefined,
