@@ -4,7 +4,7 @@ import * as XLSX from "xlsx";
 import { isValidContainerNo } from "./incentive";
 import { ContainerHistory } from "./types";
 
-export type ImportKind = "container_pool" | "itv_master" | "driver_master" | "unknown";
+export type ImportKind = "container_pool" | "itv_master" | "driver_master" | "driver_triplog" | "unknown";
 
 export interface ParsedSheet {
   name: string;
@@ -277,6 +277,21 @@ export const REPORT_FORMATS: ReportFormat[] = [
       ["Sohan Bharwad", "98250 22334", "Active", "A157", "no MICT"],
     ],
   },
+  {
+    id: "driver_triplog",
+    label: "Driver trip log (daily)",
+    category: "Daily logs",
+    kind: "driver_triplog",
+    icon: "📋",
+    status: "ready",
+    blurb: "One row per driver per day — how many import / export / scanning moves (20' & 40') and check-package. TEU is worked out automatically (20'=1, 40'=2).",
+    columns: ["Date", "Driver Name", "ITV", "Vendor", "Import 20", "Import 40", "Export 20", "Export 40", "Scanning 20", "Scanning 40", "Check Package", "Remarks"],
+    template: [
+      ["Date", "Driver Name", "ITV", "Vendor", "Import 20", "Import 40", "Export 20", "Export 40", "Scanning 20", "Scanning 40", "Check Package", "Remarks"],
+      ["27-07-2026", "Ramesh Yadav", "A333", "Active", "6", "2", "3", "1", "0", "0", "0", ""],
+      ["27-07-2026", "Sohan Bharwad", "A157", "Active", "0", "0", "0", "0", "8", "2", "0", "scanning only"],
+    ],
+  },
   // ── Reports we expect but haven't wired yet — listed so the chooser shows the full
   //    picture. Flip status to "ready" and fill columns/direction when the file arrives. ──
   {
@@ -333,7 +348,10 @@ export function guessKind(sheet: ParsedSheet): ImportKind {
   const body = sheet.rows.slice(1, 30);
   let containerHits = 0;
   body.forEach((r) => r.forEach((c) => { if (isValidContainerNo(c)) containerHits++; }));
+  // a trip log carries move-count columns (import/export/scanning by 20/40)
+  const hasCounts = findCol(headers, ["import20", "imp20", "export20", "exp20", "scanning20", "scan20", "checkpackage", "checkpkg"]) >= 0;
   if (containerHits >= 3 || hasContainer) return "container_pool";
+  if (hasCounts && (hasDriverName || hasVehicle)) return "driver_triplog";
   if (hasDriverName && hasPhone) return "driver_master";
   if (hasVehicle) return "itv_master";
   return "unknown";
@@ -496,6 +514,48 @@ export function extractDrivers(sheet: ParsedSheet): ImportedDriver[] {
       vendor: venCol >= 0 ? r[venCol] || undefined : undefined,
       note: noteCol >= 0 ? r[noteCol] || undefined : undefined,
       vehicleId: vCol >= 0 ? (r[vCol] || "").toUpperCase() || undefined : undefined,
+    }];
+  });
+}
+
+export interface ImportedTripLog {
+  date: string; driverName: string; itv?: string; vendor?: string;
+  imp20: number; imp40: number; exp20: number; exp40: number;
+  scan20: number; scan40: number; checkPkg: number; remarks?: string;
+}
+
+/** Parse a daily driver trip-log sheet into per-driver rows. */
+export function extractTripLogs(sheet: ParsedSheet): ImportedTripLog[] {
+  const h = sheet.rows[0];
+  const dCol = findCol(h, ["date", "day", "shiftdate"]);
+  const nCol = findCol(h, ["drivername", "driver", "name"]);
+  const vCol = findCol(h, ["itv", "callsign", "vehicle", "truck"]);
+  const venCol = findCol(h, ["vendor", "transporter", "company"]);
+  const remCol = findCol(h, ["remark", "note"]);
+  const col = (...keys: string[]) => findCol(h, keys);
+  const imp20C = col("import20", "imp20"), imp40C = col("import40", "imp40");
+  const exp20C = col("export20", "exp20"), exp40C = col("export40", "exp40");
+  const scan20C = col("scanning20", "scan20"), scan40C = col("scanning40", "scan40");
+  const cpC = col("checkpackage", "checkpkg", "cp");
+  if (nCol < 0) return [];
+  const num = (r: string[], i: number) => (i >= 0 ? Math.max(0, parseInt((r[i] || "").replace(/[^0-9-]/g, ""), 10) || 0) : 0);
+  const today = new Date();
+  const defDate = `${String(today.getDate()).padStart(2, "0")}-${String(today.getMonth() + 1).padStart(2, "0")}-${today.getFullYear()}`;
+  return sheet.rows.slice(1).flatMap((r) => {
+    const driverName = (nCol >= 0 ? r[nCol] : "").trim();
+    const itv = vCol >= 0 ? (r[vCol] || "").toUpperCase().trim() || undefined : undefined;
+    // keep a row if it has EITHER a driver OR an ITV (the system file gives ITV, no driver)
+    if (!driverName && !itv) return [];
+    return [{
+      date: (dCol >= 0 ? r[dCol] : "").trim() || defDate,
+      driverName,
+      itv,
+      vendor: venCol >= 0 ? r[venCol]?.trim() || undefined : undefined,
+      imp20: num(r, imp20C), imp40: num(r, imp40C),
+      exp20: num(r, exp20C), exp40: num(r, exp40C),
+      scan20: num(r, scan20C), scan40: num(r, scan40C),
+      checkPkg: num(r, cpC),
+      remarks: remCol >= 0 ? r[remCol]?.trim() || undefined : undefined,
     }];
   });
 }

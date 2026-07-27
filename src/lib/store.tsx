@@ -3,7 +3,7 @@
 import React, { createContext, useContext, useEffect, useReducer, useRef } from "react";
 import { getDataStore } from "./data";
 import type { DataStore } from "./data/DataStore";
-import { Assignment, Driver, Equipment, EquipmentLog, Issue, MovementType, Offer, Operator, PlanProposal, PlanRules, RateCard, Site, SummaryNotes, Trip, Vehicle, Vendor, Verification, ContainerHistory, FeedSnapshot, DutyPriority, isLive } from "./types";
+import { Assignment, Driver, Equipment, EquipmentLog, Issue, MovementType, Offer, Operator, PlanProposal, PlanRules, RateCard, Site, SummaryNotes, Trip, Vehicle, Vendor, Verification, ContainerHistory, FeedSnapshot, DutyPriority, isLive, DriverTripLog } from "./types";
 import {
   DEFAULT_SUMMARY_NOTES, DRIVERS, EQUIPMENT, HOT_JOBS, ME_DRIVER_ID, ME_VEHICLE_ID, OPERATORS, PLAN_RULES, RATE_CARD, SEED_ISSUES,
   SEED_TRIPS, SHIFT, SITE, SITES, SUPERVISORS, VEHICLES,
@@ -27,6 +27,8 @@ export interface AppState {
   history: ContainerHistory[]; // containers that have left — compact, for TAT & volumes
   feeds: FeedSnapshot[]; // one row per uploaded file — the pendency trend
   lastFeedAt: Record<string, number>; // direction → newest feed timestamp seen
+  driverLogs: DriverTripLog[]; // per-driver-per-day trip/TEU records (manual or uploaded)
+  nextDriverLogId: number;
   sites: Site[]; // projects/sites the operator runs
   activeSiteId: string; // currently-selected site
   planRules: PlanRules; // allocation rules — editable in console, versioned
@@ -94,6 +96,9 @@ type Action =
   | { type: "addOperator"; name: string; phone: string; vendor: string }
   | { type: "mapOperator"; equipmentId: string; operatorId: string | null }
   | { type: "logEquipmentUsage"; equipmentId: string; operatorId: string; date: string; hours: number; moves: number; note?: string; enteredBy: string }
+  | { type: "addDriverLog"; log: Omit<DriverTripLog, "id" | "at" | "source">; source?: "manual" | "upload" }
+  | { type: "deleteDriverLog"; id: number }
+  | { type: "importDriverLogs"; list: Omit<DriverTripLog, "id" | "at" | "source">[] }
   | { type: "hydrate"; state: Partial<AppState>; quiet?: boolean }
   | { type: "resetDemo" }
   | { type: "clearCelebration" }
@@ -141,6 +146,32 @@ function makeOffer(now: number, assigned?: Assignment): Offer {
     boost: pick.boost,
     boostReason: pick.boostReason,
     expiresIn: 60,
+  };
+}
+
+// Match a typed/uploaded driver name to a driver in the master (case/space-insensitive),
+// so their trip logs roll up under the same person even with minor spelling differences.
+function matchDriver(s: AppState, name: string): Driver | undefined {
+  const n = name.toLowerCase().replace(/\s+/g, " ").trim();
+  if (!n) return undefined;
+  return s.drivers.find((d) => d.name.toLowerCase().replace(/\s+/g, " ").trim() === n)
+    ?? s.drivers.find((d) => d.name.toLowerCase().includes(n) || n.includes(d.name.toLowerCase()));
+}
+
+// Resolve the driver for a trip-log row. Driver name wins; if a row has only an ITV
+// (the system file gives TEU + ITV, no driver), we look up the driver currently
+// mapped to that ITV. Keeps driver-wise productivity working from either source.
+function resolveLogDriver(s: AppState, log: Omit<DriverTripLog, "id" | "at" | "source">): Omit<DriverTripLog, "id" | "at" | "source"> {
+  let driver = log.driverName ? matchDriver(s, log.driverName) : undefined;
+  if (!driver && log.itv) {
+    const veh = s.vehicles.find((v) => v.id.toUpperCase() === log.itv!.toUpperCase());
+    if (veh?.driverId) driver = s.drivers.find((d) => d.id === veh.driverId);
+  }
+  return {
+    ...log,
+    driverId: log.driverId ?? driver?.id,
+    driverName: log.driverName || driver?.name || "",
+    vendor: log.vendor ?? driver?.vendor ?? s.vehicles.find((v) => v.id.toUpperCase() === (log.itv ?? "").toUpperCase())?.vendor,
   };
 }
 
@@ -821,6 +852,20 @@ function coreReducer(s: AppState, a: Action): AppState {
       return { ...s, equipmentLogs: [log, ...s.equipmentLogs], nextLogId: s.nextLogId + 1, toast: `Logged ${a.hours}h / ${a.moves} moves · ${a.equipmentId}` };
     }
 
+    case "addDriverLog": {
+      const log: DriverTripLog = { ...resolveLogDriver(s, a.log), id: s.nextDriverLogId, at: s.now, source: a.source ?? "manual" };
+      return { ...s, driverLogs: [log, ...s.driverLogs], nextDriverLogId: s.nextDriverLogId + 1, toast: `Trip log saved · ${log.driverName || log.itv}` };
+    }
+
+    case "deleteDriverLog":
+      return { ...s, driverLogs: s.driverLogs.filter((l) => l.id !== a.id), toast: "Trip log removed" };
+
+    case "importDriverLogs": {
+      let id = s.nextDriverLogId;
+      const rows: DriverTripLog[] = a.list.map((r) => ({ ...resolveLogDriver(s, r), id: id++, at: s.now, source: "upload" as const }));
+      return { ...s, driverLogs: [...rows, ...s.driverLogs], nextDriverLogId: id, toast: `Loaded ${rows.length} trip row${rows.length === 1 ? "" : "s"}` };
+    }
+
     case "quickAllocate": {
       // Once the roster is started, only deploy ITVs that actually turned up.
       const rosterOn = s.vehicles.some(isLive);
@@ -974,6 +1019,8 @@ const initial: AppState = {
   pool: [],
   history: [],
   feeds: [],
+  driverLogs: [],
+  nextDriverLogId: 1,
   lastFeedAt: {},
   sites: SITES,
   activeSiteId: SITE.id,
@@ -1037,6 +1084,7 @@ const PERSIST_KEYS = [
   "drivers", "vehicles", "trips", "issues", "assignments", "pool", "history", "feeds", "lastFeedAt",
   "vendors", "rateCard", "milestoneTeu", "sites", "activeSiteId", "planRules", "summaryNotes",
   "equipment", "operators", "equipmentLogs", "nextLogId",
+  "driverLogs", "nextDriverLogId",
   "nextTripId", "nextIssueId", "passesThisShift", "milestoneHit",
 ] as const;
 type Persistable = Pick<AppState, (typeof PERSIST_KEYS)[number]>;

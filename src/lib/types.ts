@@ -217,6 +217,35 @@ export function isLive(v: Vehicle): boolean {
   return !!(v.live?.manual || v.live?.app);
 }
 
+// ── Driver trip log ──────────────────────────────────────────────────────────
+// The day-to-day record we can start capturing NOW (before auto-allocation is live):
+// per driver, per day, how many moves of each kind they did. Entered by hand or
+// uploaded as a daily file. TEU is derived (20' = 1, 40' = 2).
+export interface DriverTripLog {
+  id: number;
+  date: string;        // YYYY-MM-DD (the shift date)
+  driverId?: string;   // matched to the driver master, if found
+  driverName: string;  // as typed / uploaded (kept even if unmatched)
+  itv?: string;        // ITV call sign that day
+  vendor?: string;
+  imp20: number; imp40: number;   // import moves
+  exp20: number; exp40: number;   // export moves
+  scan20: number; scan40: number; // scanning moves
+  checkPkg: number;               // check-package moves
+  remarks?: string;
+  source: "manual" | "upload";
+  at: number;          // epoch ms entered
+}
+
+/** Total moves (trips) in a log row. */
+export function logTrips(l: DriverTripLog): number {
+  return l.imp20 + l.imp40 + l.exp20 + l.exp40 + l.scan20 + l.scan40 + l.checkPkg;
+}
+/** Total TEU: 20' = 1, 40' = 2. Check-package counted as 1 TEU each. */
+export function logTeu(l: DriverTripLog): number {
+  return l.imp20 + l.exp20 + l.scan20 + l.checkPkg + 2 * (l.imp40 + l.exp40 + l.scan40);
+}
+
 export interface TripEarnings {
   base: number;
   night: number;

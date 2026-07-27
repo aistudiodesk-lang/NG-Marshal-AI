@@ -5,16 +5,17 @@ import React, { useEffect, useState } from "react";
 import { useApp, RATE_CARD, SITE, SHIFT, HOT_JOBS, RETENTION } from "@/lib/store";
 import { DEPLOYMENT } from "@/lib/seed";
 import { fmtClock, fmtInr } from "@/lib/incentive";
-import { parseSheetDateMs, livePool, REPORT_FORMATS, formatById, guessFormat, extractContainersDiag, extractVehicles, extractDrivers } from "@/lib/importer";
+import { parseSheetDateMs, livePool, REPORT_FORMATS, formatById, guessFormat, extractContainersDiag, extractVehicles, extractDrivers, extractTripLogs } from "@/lib/importer";
 import YardTab from "./YardTab";
 import AnalyticsPanel from "./AnalyticsPanel";
 import ItvPlannerTab from "./ItvPlannerTab";
+import DriverLogTab from "./DriverLogTab";
 import { EQUIPMENT_TYPE_LABEL, EquipmentType, Issue, MOVEMENT_LABEL, MovementType, VehicleStatus, DUTY_LABEL, DutyPriority, isLive } from "@/lib/types";
 import { Wordmark } from "@/components/Brand";
 
 // The command centre comes FIRST — the dashboard is always the landing screen.
 // The EXIM pendency report (your Excel format) is its own tab right beside it.
-type Tab = "dashboard" | "pendency" | "yard" | "planning" | "itv" | "setup";
+type Tab = "dashboard" | "pendency" | "yard" | "planning" | "itv" | "driverlog" | "setup";
 
 const TABS: { id: Tab; label: string; purpose: string }[] = [
   { id: "dashboard", label: "Dashboard",   purpose: "THE WHOLE PICTURE — deployment, fleet status, trips, hot list, open issues and shift analytics, live." },
@@ -22,6 +23,7 @@ const TABS: { id: Tab; label: string; purpose: string }[] = [
   { id: "yard",      label: "Yard",        purpose: "SEE — block-wise map of where the containers actually are. Colour it by ageing, direction, flags or fill." },
   { id: "planning",  label: "Demand",      purpose: "SEE THE WORK — how much import & export is waiting at each destination, and the shift deployment summary. No ITV named here." },
   { id: "itv",       label: "ITV Planner", purpose: "PLAN THE FLEET — everything to plan the ITVs in one place: mark who's live, read the demand, quick-allocate or auto-plan, send each ITV, confirm." },
+  { id: "driverlog", label: "Driver Log",  purpose: "CAPTURE — log each driver's daily trips & TEU (import / export / scanning, 20' & 40'). Type them in, or upload a daily file." },
   { id: "setup",     label: "Setup",       purpose: "CONFIGURE — masters (vendors, ITVs, drivers), equipment & operators, rate card, incentives, planning rules." },
 ];
 
@@ -93,7 +95,8 @@ export default function ConsolePage() {
   const site = state.sites.find((x) => x.id === state.activeSiteId) ?? SITE;
   const completed = state.trips.filter((t) => t.state === "completed");
   
-  const liveTeu = SHIFT.teuDoneBase + completed.filter((t) => t.id >= 1000).reduce((a, t) => a + t.teu, 0);
+  // TEUs done this shift = the real completed trips (was a demo base + trips).
+  const liveTeu = completed.reduce((a, t) => a + t.teu, 0);
   const running = state.vehicles.filter((v) => v.status === "running").length;
   const liveCount = state.vehicles.filter((v) => isLive(v)).length;
   const liveConfirmed = state.vehicles.filter((v) => v.live?.manual && v.live?.app).length;
@@ -118,7 +121,12 @@ export default function ConsolePage() {
     return { d, trips: trips.length, teu, amt, pendingApproval };
   });
 
-  const pendencyNow = SHIFT.pendencyStart + SHIFT.pendencyAdd - liveTeu;
+  // REAL pendency = total TEU of everything still pending in the pool (import + export).
+  // (Was a demo formula "start + add − done" that went negative once real TEU loaded.)
+  const pend = livePool(state.pool);
+  const pendImpTeu = pend.filter((c) => (c.direction ?? "import") === "import").reduce((a, c) => a + c.teu, 0);
+  const pendExpTeu = pend.filter((c) => c.direction === "export").reduce((a, c) => a + c.teu, 0);
+  const pendencyNow = pendImpTeu + pendExpTeu;
 
   // robust cutoff parser — handles "7/5/26 10:00" (m/d/yy) and "20-06-2026 08:30" (d-m-yyyy)
   const parseCutoffMs = (raw?: string): number => {
@@ -163,11 +171,10 @@ export default function ConsolePage() {
   const reportText = `*EXIM Terminal Movement Pendency* Details ( In TEUS)
 ${new Date().toLocaleDateString("en-GB").replace(/\//g, ".")} Day Shift (08:00 to 14:00)
 
-At the shift start:${SHIFT.pendencyStart}
-During shift add:${SHIFT.pendencyAdd}
-Balance:${SHIFT.pendencyStart + SHIFT.pendencyAdd}
-Actual Completed:${liveTeu}
-Current Pendency:${pendencyNow}
+Import Pendency:${pendImpTeu}
+Export Pendency:${pendExpTeu}
+Total Pendency:${pendencyNow}
+Completed this shift:${liveTeu}
 
 *Remarks: ${standby > 0 ? `${standby} ITV standby CT3 gate (no parchi) — evidence pack attached` : ""}
 
@@ -623,6 +630,7 @@ Current Pendency:${pendencyNow}
         )}
 
         {tab === "setup" && <StoragePanel />}
+        {tab === "driverlog" && <DriverLogTab />}
         {tab === "setup" && <MastersTab />}
         {tab === "setup" && <EquipmentTab />}
       </div>
@@ -742,13 +750,14 @@ function ImportModal({ fileName, sheets, defaultFormatId, onClose }: { fileName:
 
   const built = sheets.map((sh, i) => {
     const fmt = formatById(choice[i]);
-    if (!fmt) return { sh, fmt: null as ReturnType<typeof formatById> | null, containers: [], vehicles: [], drivers: [], diag: null as ReturnType<typeof extractContainersDiag>["diag"] | null };
+    if (!fmt) return { sh, fmt: null as ReturnType<typeof formatById> | null, containers: [], vehicles: [], drivers: [], triplogs: [], diag: null as ReturnType<typeof extractContainersDiag>["diag"] | null };
     if (fmt.kind === "container_pool") {
       const { containers, diag } = extractContainersDiag(sh, fileName, fmt.direction);
-      return { sh, fmt, containers, vehicles: [], drivers: [], diag };
+      return { sh, fmt, containers, vehicles: [], drivers: [], triplogs: [], diag };
     }
-    if (fmt.kind === "itv_master") return { sh, fmt, containers: [], vehicles: extractVehicles(sh), drivers: [], diag: null };
-    return { sh, fmt, containers: [], vehicles: [], drivers: extractDrivers(sh), diag: null };
+    if (fmt.kind === "itv_master") return { sh, fmt, containers: [], vehicles: extractVehicles(sh), drivers: [], triplogs: [], diag: null };
+    if (fmt.kind === "driver_triplog") return { sh, fmt, containers: [], vehicles: [], drivers: [], triplogs: extractTripLogs(sh), diag: null };
+    return { sh, fmt, containers: [], vehicles: [], drivers: extractDrivers(sh), triplogs: [], diag: null };
   });
 
   const containerSheets = built.filter((b) => b.fmt?.kind === "container_pool" && b.containers.length);
@@ -758,6 +767,7 @@ function ImportModal({ fileName, sheets, defaultFormatId, onClose }: { fileName:
     if (b.fmt.kind === "container_pool") dispatch({ type: "importContainers", list: b.containers, source: fileName });
     if (b.fmt.kind === "itv_master") dispatch({ type: "importVehicles", list: b.vehicles });
     if (b.fmt.kind === "driver_master") dispatch({ type: "importDrivers", list: b.drivers });
+    if (b.fmt.kind === "driver_triplog") dispatch({ type: "importDriverLogs", list: b.triplogs });
     onClose();
   };
 
@@ -783,7 +793,7 @@ function ImportModal({ fileName, sheets, defaultFormatId, onClose }: { fileName:
         {built.map((b, i) => {
           const fmt = b.fmt;
           const isContainer = fmt?.kind === "container_pool";
-          const count = isContainer ? b.containers.length : fmt?.kind === "itv_master" ? b.vehicles.length : fmt?.kind === "driver_master" ? b.drivers.length : 0;
+          const count = isContainer ? b.containers.length : fmt?.kind === "itv_master" ? b.vehicles.length : fmt?.kind === "driver_master" ? b.drivers.length : fmt?.kind === "driver_triplog" ? b.triplogs.length : 0;
           return (
             <div key={i} className="border-t border-[#EDF0F5] pt-2.5">
               <div className="flex flex-wrap items-center justify-between gap-2">
@@ -827,6 +837,7 @@ function ImportModal({ fileName, sheets, defaultFormatId, onClose }: { fileName:
               )}
               {fmt?.kind === "itv_master" && <p className="text-[11px] text-[#5C6B80] mt-1">{b.vehicles.length} ITVs detected.</p>}
               {fmt?.kind === "driver_master" && <p className="text-[11px] text-[#5C6B80] mt-1">{b.drivers.length} drivers detected.</p>}
+              {fmt?.kind === "driver_triplog" && <p className="text-[11px] text-[#5C6B80] mt-1">{b.triplogs.length} driver-day rows detected.</p>}
 
               {/* raw preview */}
               <div className="overflow-x-auto mt-1.5">

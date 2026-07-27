@@ -408,3 +408,17 @@ The downloadable blank formats were simplified/reordered. Changed them to the EX
 - **Export cut-off**: Sheet1 header `SR NO., CONT, SIZE, CHA NAME, STUFFING MODE, MOV-REC DATE, VCN NO, VESSEL NAME, TERMINAL, GATE CUT-OFF, LOCATION, STUFFING VESSEL, TERMINAL3, GATE CUT-OFF, REMARK, LINE SEAL` (16 cols, keeping the file's duplicate GATE CUT-OFF) + a real sample row.
 
 The `columns` hints on the cards updated to match. Parsing of the real files was already correct (verified again: import 239/239, export Sheet1 90/90, 0 dropped) — this fixes the *download template* so it matches the format the terminal actually sends.
+
+## 27 Jul 2026 — Fixed negative pendency; added Driver Trip Log (manual + upload)
+
+**Pulled teammate's commit** (Rohan): fixed the ITV master parser to the real Adani fleet-register layout (Sr, Vendor, Number Plate, Internal No, Status, Driver Name, Remarks) — Internal No → call sign, Number Plate → reg, skips inactive/scrapped ITVs. Merged clean.
+
+**Negative pendency bug fixed.** The KPI + WhatsApp report used a leftover demo formula `SHIFT.pendencyStart + pendencyAdd − liveTeu`, which went negative once real TEU loaded. Replaced with the REAL pendency = total TEU of everything pending in the pool (import + export), always ≥ 0. `liveTeu` (TEUs done) is now the real completed-trip TEU, no demo base. Verified: 20 real containers → PENDENCY 27 TEU.
+
+**Driver Trip Log — the thing we can start capturing NOW** (before auto-allocation). New **Driver Log** tab:
+- **Manual entry**: Date, Driver, ITV, then move counts by Import / Export / Scanning (20' & 40') + Check package. TEU auto-computed (20'=1, 40'=2). Live trips/TEU, Save. Verified: 6/2 import + 3/1 export → 12 trips, 15 TEU, matched to the driver master.
+- **Excel/CSV upload**: a "Driver trip log (daily)" report type in the Import chooser (category "Daily logs") with a downloadable template. One row per driver per day.
+- **Two sources reconciled by design**: a driver-wise file (driver named) OR the **system file that gives ITV + TEU but no driver** — those rows derive the driver from the current ITV↔driver mapping. Verified: an ITV-only row (A333, no driver) resolved to Ramesh Yadav. `source` is tracked (manual / upload; system / app later) so a reconciliation view can layer on — same idea as the ITV mark-live reconcile.
+- Per-driver totals table (TEU by import/export/scanning/check-pkg), date filter, CSV export, and per-row edit/delete.
+
+**Noted for later (not built):** drag-and-drop plan editor on Suggest Plan (select ITVs / block / vendor → drop onto a focus area, Navis-style); driver-app feed of trips; full source reconciliation. Allocation itself is deferred per the plan — capture data first, keep improving.
