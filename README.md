@@ -8,6 +8,16 @@ Pilot site: Mundra EXIM Yard. Universal core — sites, zones and movement types
 **New to this repo? Start with [`TEAM-HANDOFF.md`](./TEAM-HANDOFF.md)** — what's real vs. simulated,
 architecture, deploy steps, and the priority-ordered list of remaining work.
 
+## 🚀 Setup & deployment (read these first)
+
+| Do this | Guide |
+|---|---|
+| **Host it live** (Vercel + Supabase) so the team shares one link with live data | **[`docs/GO-LIVE-DEPLOY.md`](./docs/GO-LIVE-DEPLOY.md)** |
+| **Auto-forward the pendency email** into the app every 3 hrs (do this *after* hosting) | **[`docs/AUTO-FORWARD-SETUP.md`](./docs/AUTO-FORWARD-SETUP.md)** |
+| How the app is used day-to-day (import → mark live → plan → log trips) | [`docs/NG-MARSHAL-USER-MANUAL.md`](./docs/NG-MARSHAL-USER-MANUAL.md) |
+
+> Order: **1) deploy (GO-LIVE-DEPLOY)** → **2) auto-forward (AUTO-FORWARD-SETUP)**. Auto-forward needs the app already hosted with `INGEST_TOKEN` set, because the email service must reach a public URL.
+
 ## Run locally
 
 ```bash
