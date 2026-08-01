@@ -235,6 +235,15 @@ export interface DriverTripLog {
   remarks?: string;
   source: "manual" | "upload";
   at: number;          // epoch ms entered
+  // ── timing (from the transport report's per-move timestamps) ──
+  firstMin?: number;   // first gate event of the day (minutes since midnight)
+  lastMin?: number;    // last gate event
+  avgGapMin?: number;  // average minutes between this truck's consecutive moves = cycle time
+}
+
+/** Active span for a truck's day, in hours (last move − first move). */
+export function logActiveHrs(l: DriverTripLog): number {
+  return l.firstMin != null && l.lastMin != null ? Math.max(0, (l.lastMin - l.firstMin) / 60) : 0;
 }
 
 /** Total moves (trips) in a log row. */

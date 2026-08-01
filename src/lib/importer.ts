@@ -553,12 +553,14 @@ export function extractTransportMoves(sheet: ParsedSheet): ImportedTripLog[] {
   const sizeCol = findCol(h, ["contsize", "size"]);
   const truckCol = findCol(h, ["intruckno", "truckno", "truck", "vehicle"]);
   const dateCol = findCol(h, ["transactiondate", "date"]);
+  const timeCol = findCol(h, ["transactiontime", "time"]);
   const transCol = findCol(h, ["transporter", "vendor"]);
   const modeCol = findCol(h, ["modeofoperation", "operation", "mode"]);
   if (cCol < 0 || truckCol < 0 || modeCol < 0) return [];
   const today = new Date();
   const defDate = `${String(today.getDate()).padStart(2, "0")}-${String(today.getMonth() + 1).padStart(2, "0")}-${today.getFullYear()}`;
-  const agg = new Map<string, ImportedTripLog>();
+  const parseMin = (t: string) => { const m = (t || "").match(/(\d{1,2}):(\d{2})/); return m ? Number(m[1]) * 60 + Number(m[2]) : NaN; };
+  const agg = new Map<string, ImportedTripLog & { _times: number[] }>();
   sheet.rows.slice(1).forEach((r) => {
     const truck = (r[truckCol] || "").toUpperCase().trim();
     if (!truck) return;
@@ -568,20 +570,32 @@ export function extractTransportMoves(sheet: ParsedSheet): ImportedTripLog[] {
     const vendor = transCol >= 0 ? (r[transCol] || "").trim() || undefined : undefined;
     const key = `${date}|${truck}`;
     let g = agg.get(key);
-    if (!g) { g = { date, driverName: "", itv: truck, vendor, imp20: 0, imp40: 0, exp20: 0, exp40: 0, scan20: 0, scan40: 0, checkPkg: 0 }; agg.set(key, g); }
+    if (!g) { g = { date, driverName: "", itv: truck, vendor, imp20: 0, imp40: 0, exp20: 0, exp40: 0, scan20: 0, scan40: 0, checkPkg: 0, _times: [] }; agg.set(key, g); }
     if (vendor && !g.vendor) g.vendor = vendor;
     if (cat === "import") size === 20 ? g.imp20++ : g.imp40++;
     else if (cat === "export") size === 20 ? g.exp20++ : g.exp40++;
     else if (cat === "scanning") size === 20 ? g.scan20++ : g.scan40++;
     else g.checkPkg++;
+    const min = parseMin(timeCol >= 0 ? r[timeCol] : "");
+    if (!isNaN(min)) g._times.push(min);
   });
-  return [...agg.values()];
+  // per truck-day, turn the move times into cycle-time stats
+  return [...agg.values()].map(({ _times, ...g }) => {
+    const t = _times.sort((a, b) => a - b);
+    if (t.length >= 2) {
+      const gaps = t.slice(1).map((v, i) => v - t[i]).filter((x) => x > 0);
+      const avgGap = gaps.length ? Math.round(gaps.reduce((a, b) => a + b, 0) / gaps.length) : undefined;
+      return { ...g, firstMin: t[0], lastMin: t[t.length - 1], avgGapMin: avgGap };
+    }
+    return g;
+  });
 }
 
 export interface ImportedTripLog {
   date: string; driverName: string; itv?: string; vendor?: string;
   imp20: number; imp40: number; exp20: number; exp40: number;
   scan20: number; scan40: number; checkPkg: number; remarks?: string;
+  firstMin?: number; lastMin?: number; avgGapMin?: number;
 }
 
 /** Parse a daily driver trip-log sheet into per-driver rows. */
