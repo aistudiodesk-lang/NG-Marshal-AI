@@ -48,3 +48,7 @@ android/local.properties
 dist/
 .ngdata/
 _realdata/
+
+# local operational scratch — DB snapshots taken before an import, dev server logs
+backups/
+tmp/
