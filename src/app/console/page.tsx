@@ -23,7 +23,7 @@ const TABS: { id: Tab; label: string; purpose: string }[] = [
   { id: "yard",      label: "Yard",        purpose: "SEE — block-wise map of where the containers actually are. Colour it by ageing, direction, flags or fill." },
   { id: "planning",  label: "Demand",      purpose: "SEE THE WORK — how much import & export is waiting at each destination, and the shift deployment summary. No ITV named here." },
   { id: "itv",       label: "ITV Planner", purpose: "PLAN THE FLEET — everything to plan the ITVs in one place: mark who's live, read the demand, quick-allocate or auto-plan, send each ITV, confirm." },
-  { id: "driverlog", label: "Driver Log",  purpose: "CAPTURE — log each driver's daily trips & TEU (import / export / scanning, 20' & 40'). Type them in, or upload a daily file." },
+  { id: "driverlog", label: "Trip Log",    purpose: "CAPTURE — log ITV / driver trips & TEU per day (import / export / scanning, 20' & 40'). Upload a summary or type it in; view by driver, ITV or vendor." },
   { id: "setup",     label: "Setup",       purpose: "CONFIGURE — masters (vendors, ITVs, drivers), equipment & operators, rate card, incentives, planning rules." },
 ];
 

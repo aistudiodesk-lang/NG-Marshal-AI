@@ -422,3 +422,11 @@ The `columns` hints on the cards updated to match. Parsing of the real files was
 - Per-driver totals table (TEU by import/export/scanning/check-pkg), date filter, CSV export, and per-row edit/delete.
 
 **Noted for later (not built):** drag-and-drop plan editor on Suggest Plan (select ITVs / block / vendor → drop onto a focus area, Navis-style); driver-app feed of trips; full source reconciliation. Allocation itself is deferred per the plan — capture data first, keep improving.
+
+## 1 Aug 2026 — Self-host backend (Mac mini → AWS); Trip Log rename + views
+
+**Server-side `http` datastore** so the app can run on a Mac mini (then AWS) with data that persists on the SERVER's disk and is shared across every browser on the network — not per-browser like `local`. New `src/app/api/state/route.ts` (GET/POST, JSONB-style snapshot + optimistic-lock rev, file storage under `NG_DATA_DIR`, optional `NG_STATE_TOKEN`) and `src/lib/data/httpStore.ts`. Selected with `NEXT_PUBLIC_BACKEND=http`. Verified: save→disk, load, peek-rev, and stale-rev conflict all correct. Three backends now: local (browser) / http (self-host) / supabase (cloud) — same interface, chosen by env var.
+
+**Trip Log** (was "Driver Log") — it's ITV-centric, not driver-centric. Renamed the tab. Added a **Driver / ITV / Vendor** view toggle on the totals (same data, three lenses). ITV-only rows (system file) still resolve their driver from the ITV↔driver mapping. Time-wise view pending real timestamped data.
+
+**Noted for next (awaiting the user's sample):** the **transport report** — the container-wise file (when / which container / which ITV / driver). Upload once → feeds Trip Log + a live insights dashboard, and is reflected across the relevant tabs. Principle confirmed: data uploaded once is accessible everywhere; tabs are just lenses on one shared pool.

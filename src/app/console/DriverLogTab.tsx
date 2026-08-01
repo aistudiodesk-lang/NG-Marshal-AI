@@ -48,25 +48,30 @@ export default function DriverLogTab() {
 
   // filter + summary
   const [dayFilter, setDayFilter] = useState<string>("all");
+  const [groupBy, setGroupBy] = useState<"driver" | "itv" | "vendor">("driver");
   const dates = useMemo(() => [...new Set(state.driverLogs.map((l) => l.date))].sort().reverse(), [state.driverLogs]);
   const rows = state.driverLogs.filter((l) => dayFilter === "all" || l.date === dayFilter);
 
-  // per-driver rollup for the filtered range
-  const perDriver = useMemo(() => {
-    const m = new Map<string, { name: string; itvs: Set<string>; vendor?: string; trips: number; teu: number; imp: number; exp: number; scan: number; cp: number }>();
+  // rollup by the chosen dimension (driver / ITV / vendor) for the filtered range
+  const perGroup = useMemo(() => {
+    const m = new Map<string, { name: string; sub: Set<string>; trips: number; teu: number; imp: number; exp: number; scan: number; cp: number }>();
     rows.forEach((l) => {
-      const key = l.driverId || l.driverName || l.itv || "—";
-      if (!m.has(key)) m.set(key, { name: l.driverName || `ITV ${l.itv}`, itvs: new Set(), vendor: l.vendor, trips: 0, teu: 0, imp: 0, exp: 0, scan: 0, cp: 0 });
+      const key = groupBy === "itv" ? (l.itv || "—") : groupBy === "vendor" ? (l.vendor || "—") : (l.driverId || l.driverName || l.itv || "—");
+      const name = groupBy === "itv" ? (l.itv || "— no ITV") : groupBy === "vendor" ? (l.vendor || "— no vendor") : (l.driverName || `ITV ${l.itv}`);
+      if (!m.has(key)) m.set(key, { name, sub: new Set(), trips: 0, teu: 0, imp: 0, exp: 0, scan: 0, cp: 0 });
       const g = m.get(key)!;
-      if (l.itv) g.itvs.add(l.itv);
+      // the "sub" column shows the other identity: driver view → ITVs; itv view → drivers; vendor view → ITVs
+      const subVal = groupBy === "itv" ? l.driverName : groupBy === "vendor" ? l.itv : l.itv;
+      if (subVal) g.sub.add(subVal);
       g.trips += logTrips(l); g.teu += logTeu(l);
       g.imp += l.imp20 + 2 * l.imp40; g.exp += l.exp20 + 2 * l.exp40; g.scan += l.scan20 + 2 * l.scan40; g.cp += l.checkPkg;
     });
     return [...m.values()].sort((a, b) => b.teu - a.teu);
-  }, [rows]);
+  }, [rows, groupBy]);
 
-  const totalTeu = perDriver.reduce((a, d) => a + d.teu, 0);
-  const totalTrips = perDriver.reduce((a, d) => a + d.trips, 0);
+  const subHeader = groupBy === "itv" ? "Driver(s)" : "ITV(s)";
+  const totalTeu = perGroup.reduce((a, d) => a + d.teu, 0);
+  const totalTrips = perGroup.reduce((a, d) => a + d.trips, 0);
 
   const exportCsv = () => {
     const head = ["Date", "Driver", "ITV", "Vendor", "Import 20", "Import 40", "Export 20", "Export 40", "Scanning 20", "Scanning 40", "Check Package", "Trips", "TEU", "Source", "Remarks"];
@@ -126,34 +131,38 @@ export default function DriverLogTab() {
       {/* ── PER-DRIVER SUMMARY ── */}
       <div className="bg-white border border-[#D8DEE7] rounded-xl p-4">
         <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
-          <div className="flex items-center gap-2">
-            <p className="text-[11px] tracking-[0.1em] uppercase text-[#5C6B80] font-bold">Driver-wise totals</p>
+          <div className="flex items-center gap-2 flex-wrap">
+            <p className="text-[11px] tracking-[0.1em] uppercase text-[#5C6B80] font-bold">Totals by</p>
+            <div className="flex items-center gap-1 bg-[#F6F8FB] border border-[#D8DEE7] rounded-lg p-0.5">
+              {(["driver", "itv", "vendor"] as const).map((g) => (
+                <button key={g} onClick={() => setGroupBy(g)} className={`text-[11.5px] font-bold px-2.5 py-1 rounded-md capitalize ${groupBy === g ? "bg-[#1F3864] text-white" : "text-[#5C6B80]"}`}>{g === "itv" ? "ITV" : g}</button>
+              ))}
+            </div>
             <select value={dayFilter} onChange={(e) => setDayFilter(e.target.value)} className="border border-[#D8DEE7] rounded-md px-2 py-1 text-[12px] font-semibold">
               <option value="all">All dates</option>
               {dates.map((d) => <option key={d} value={d}>{d}</option>)}
             </select>
           </div>
           <div className="flex items-center gap-3">
-            <span className="text-[12px] text-[#5C6B80]"><b>{totalTrips}</b> trips · <b>{totalTeu}</b> TEU · {perDriver.length} drivers</span>
+            <span className="text-[12px] text-[#5C6B80]"><b>{totalTrips}</b> trips · <b>{totalTeu}</b> TEU · {perGroup.length} {groupBy === "itv" ? "ITVs" : groupBy === "vendor" ? "vendors" : "drivers"}</span>
             <button onClick={exportCsv} disabled={!rows.length} className="text-[11.5px] font-bold text-[#1F3864] border border-[#1F3864]/40 rounded px-2.5 py-1.5 disabled:opacity-40">⬇ Export</button>
           </div>
         </div>
-        {!perDriver.length ? (
+        {!perGroup.length ? (
           <p className="text-[12.5px] text-[#5C6B80] py-6 text-center border border-dashed border-[#D8DEE7] rounded-lg">No trips logged yet. Add a row above, or upload a daily file with ⬆ Import → Driver trip log.</p>
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full text-[12px] whitespace-nowrap">
               <thead>
                 <tr className="text-[10px] uppercase tracking-[0.07em] text-[#5C6B80]">
-                  {["Driver", "ITV(s)", "Vendor", "Import", "Export", "Scanning", "Check pkg", "Trips", "TEU"].map((h) => <th key={h} className="text-left font-bold px-2 py-1.5 border-b border-[#D8DEE7]">{h}</th>)}
+                  {[groupBy === "itv" ? "ITV" : groupBy === "vendor" ? "Vendor" : "Driver", subHeader, "Import", "Export", "Scanning", "Check pkg", "Trips", "TEU"].map((h) => <th key={h} className="text-left font-bold px-2 py-1.5 border-b border-[#D8DEE7]">{h}</th>)}
                 </tr>
               </thead>
               <tbody>
-                {perDriver.map((d, i) => (
+                {perGroup.map((d, i) => (
                   <tr key={i} className="border-b border-[#EDF0F5]">
                     <td className="px-2 py-1.5 font-semibold">{d.name}</td>
-                    <td className="px-2 py-1.5 font-mono text-[11px] text-[#5C6B80]">{[...d.itvs].join(", ") || "—"}</td>
-                    <td className="px-2 py-1.5 text-[#5C6B80]">{d.vendor ?? "—"}</td>
+                    <td className="px-2 py-1.5 font-mono text-[11px] text-[#5C6B80] max-w-40 truncate" title={[...d.sub].join(", ")}>{[...d.sub].join(", ") || "—"}</td>
                     <td className="px-2 py-1.5 tabular-nums">{d.imp}</td>
                     <td className="px-2 py-1.5 tabular-nums">{d.exp}</td>
                     <td className="px-2 py-1.5 tabular-nums">{d.scan}</td>
