@@ -10,12 +10,13 @@ import YardTab from "./YardTab";
 import AnalyticsPanel from "./AnalyticsPanel";
 import ItvPlannerTab from "./ItvPlannerTab";
 import DriverLogTab from "./DriverLogTab";
+import DriversTab from "./DriversTab";
 import { EQUIPMENT_TYPE_LABEL, EquipmentType, Issue, MOVEMENT_LABEL, MovementType, VehicleStatus, DUTY_LABEL, DutyPriority, isLive } from "@/lib/types";
 import { Wordmark } from "@/components/Brand";
 
 // The command centre comes FIRST — the dashboard is always the landing screen.
 // The EXIM pendency report (your Excel format) is its own tab right beside it.
-type Tab = "dashboard" | "pendency" | "yard" | "planning" | "itv" | "driverlog" | "setup";
+type Tab = "dashboard" | "pendency" | "yard" | "planning" | "itv" | "driverlog" | "drivers" | "setup";
 
 const TABS: { id: Tab; label: string; purpose: string }[] = [
   { id: "dashboard", label: "Dashboard",   purpose: "THE WHOLE PICTURE — deployment, fleet status, trips, hot list, open issues and shift analytics, live." },
@@ -24,6 +25,7 @@ const TABS: { id: Tab; label: string; purpose: string }[] = [
   { id: "planning",  label: "Demand",      purpose: "SEE THE WORK — how much import & export is waiting at each destination, and the shift deployment summary. No ITV named here." },
   { id: "itv",       label: "ITV Planner", purpose: "PLAN THE FLEET — everything to plan the ITVs in one place: mark who's live, read the demand, quick-allocate or auto-plan, send each ITV, confirm." },
   { id: "driverlog", label: "Trip Log",    purpose: "CAPTURE — log ITV / driver trips & TEU per day (import / export / scanning, 20' & 40'). Upload a summary or type it in; view by driver, ITV or vendor." },
+  { id: "drivers",   label: "Drivers",     purpose: "PEOPLE — driver-wise trips, TEU and ₹ incentive from the trip logs. Sort by any column, filter by date, export the incentive report." },
   { id: "setup",     label: "Setup",       purpose: "CONFIGURE — masters (vendors, ITVs, drivers), equipment & operators, rate card, incentives, planning rules." },
 ];
 
@@ -631,6 +633,7 @@ Completed this shift:${liveTeu}
 
         {tab === "setup" && <StoragePanel />}
         {tab === "driverlog" && <DriverLogTab />}
+        {tab === "drivers" && <DriversTab />}
         {tab === "setup" && <MastersTab />}
         {tab === "setup" && <EquipmentTab />}
       </div>

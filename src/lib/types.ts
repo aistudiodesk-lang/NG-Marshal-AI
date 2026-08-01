@@ -245,6 +245,22 @@ export function logTrips(l: DriverTripLog): number {
 export function logTeu(l: DriverTripLog): number {
   return l.imp20 + l.exp20 + l.scan20 + l.checkPkg + 2 * (l.imp40 + l.exp40 + l.scan40);
 }
+/** TEU by movement — the shape the rate card charges against. */
+export function logTeuByMovement(l: DriverTripLog) {
+  return {
+    import: l.imp20 + 2 * l.imp40,
+    export: l.exp20 + 2 * l.exp40,
+    scanning: l.scan20 + 2 * l.scan40,
+    check_package: l.checkPkg,
+  };
+}
+/** ₹ incentive for one driver-day row, from the rate card (+ milestone bonus if the day clears the target). */
+export function logIncentive(l: DriverTripLog, rc: RateCard, milestoneTeu: number): number {
+  const t = logTeuByMovement(l);
+  const base = t.import * rc.perTeu.import + t.export * rc.perTeu.export + t.scanning * rc.perTeu.scanning + t.check_package * rc.perTeu.check_package;
+  const milestone = milestoneTeu > 0 && logTeu(l) >= milestoneTeu ? rc.milestoneBonus : 0;
+  return Math.round(base + milestone);
+}
 
 export interface TripEarnings {
   base: number;
