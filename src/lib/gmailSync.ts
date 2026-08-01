@@ -195,27 +195,42 @@ export async function runGmailSync(): Promise<GmailSyncResult> {
   });
   const messages: GmailMessage[] = data?.messages ?? [];
 
-  // Oldest first so isNewest / clearing advances in the right order.
-  const queue = messages
+  // Every mail newer than the checkpoint, paired with its data attachment.
+  const candidates = messages
     .map((m) => ({
       m,
       ts: Date.parse(m.messageTimestamp ?? m.internalDate ?? "") || 0,
+      att: pickDataAttachment(m),
     }))
-    .filter((x) => x.ts > checkpoint)
-    .sort((a, b) => a.ts - b.ts);
+    .filter((x) => x.ts > checkpoint);
+
+  // The checkpoint must clear PAST every considered mail (even junk / no data
+  // file), so those are never re-listed. Compute it before we thin the queue.
+  const maxTsConsidered = candidates.reduce((mx, x) => Math.max(mx, x.ts), checkpoint);
+
+  // Adani re-sends the full pendency snapshot every few hours. The latest file
+  // of each direction already captures the current state, so on a cold start we
+  // only download the NEWEST import + NEWEST export instead of replaying dozens
+  // of old mails (which blows the function time limit). Direction is inferred
+  // from the attachment filename before any download.
+  const newestByDir = new Map<string, { m: GmailMessage; ts: number; att: GmailAttachment }>();
+  for (const c of candidates) {
+    if (!c.att) continue;
+    const name = c.att.filename ?? c.att.name ?? "";
+    const dir = /import/i.test(name) ? "import" : /export/i.test(name) ? "export" : name.toLowerCase();
+    const prev = newestByDir.get(dir);
+    if (!prev || c.ts > prev.ts) newestByDir.set(dir, { m: c.m, ts: c.ts, att: c.att });
+  }
+  // Oldest first so isNewest / clearing advances in the right order.
+  const queue = [...newestByDir.values()].sort((a, b) => a.ts - b.ts);
 
   let ingested = 0;
   let skipped = 0;
   let maxTs = checkpoint;
   const files: GmailSyncResult["files"] = [];
 
-  for (const { m, ts } of queue) {
+  for (const { m, ts, att } of queue) {
     maxTs = Math.max(maxTs, ts);
-    const att = pickDataAttachment(m);
-    if (!att) {
-      skipped++;
-      continue;
-    }
     const filename = att.filename ?? att.name ?? "attachment.csv";
     const buf = await downloadAttachment(m.messageId, att, filename);
     if (!buf || buf.byteLength === 0) {
@@ -240,11 +255,14 @@ export async function runGmailSync(): Promise<GmailSyncResult> {
     }
   }
 
-  if (maxTs > checkpoint) await bumpCheckpoint(client, maxTs);
+  // Advance past everything we looked at, not just the files we downloaded,
+  // so skipped/old mails don't reappear next tick.
+  const finalTs = Math.max(maxTs, maxTsConsidered);
+  if (finalTs > checkpoint) await bumpCheckpoint(client, finalTs);
 
   return {
     scanned: messages.length,
-    considered: queue.length,
+    considered: candidates.length,
     ingested,
     skipped,
     files,
