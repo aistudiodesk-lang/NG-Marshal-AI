@@ -4,7 +4,7 @@ import * as XLSX from "xlsx";
 import { isValidContainerNo } from "./incentive";
 import { ContainerHistory } from "./types";
 
-export type ImportKind = "container_pool" | "itv_master" | "driver_master" | "driver_triplog" | "unknown";
+export type ImportKind = "container_pool" | "itv_master" | "driver_master" | "driver_triplog" | "transport_report" | "unknown";
 
 export interface ParsedSheet {
   name: string;
@@ -292,6 +292,16 @@ export const REPORT_FORMATS: ReportFormat[] = [
       ["27-07-2026", "Sohan Bharwad", "A157", "Active", "0", "0", "0", "0", "8", "2", "0", "scanning only"],
     ],
   },
+  {
+    id: "transport_report",
+    label: "Transport report (container-wise)",
+    category: "Daily logs",
+    kind: "transport_report",
+    icon: "🚚",
+    status: "ready",
+    blurb: "The terminal's container-wise transport report (one row per move: truck, time, mode, from/to). Auto-aggregated into ITV / driver / vendor trips & TEU. Use the 'TransportReport' sheet.",
+    columns: ["CONT NO", "CONT SIZE", "IN TRUCK NO", "TRANSACTION DATE", "TRANSACTION TIME", "TRANSPORTER", "MODE OF OPERATION", "FROM LOCATION", "TO LOCATION"],
+  },
   // ── Reports we expect but haven't wired yet — listed so the chooser shows the full
   //    picture. Flip status to "ready" and fill columns/direction when the file arrives. ──
   {
@@ -348,6 +358,10 @@ export function guessKind(sheet: ParsedSheet): ImportKind {
   const body = sheet.rows.slice(1, 30);
   let containerHits = 0;
   body.forEach((r) => r.forEach((c) => { if (isValidContainerNo(c)) containerHits++; }));
+  // the container-wise transport report: one row per move, with a truck + mode column
+  const hasMode = findCol(headers, ["modeofoperation", "operation"]) >= 0;
+  const hasTruck = findCol(headers, ["intruckno", "truckno"]) >= 0;
+  if (hasContainer && hasMode && hasTruck) return "transport_report";
   // a trip log carries move-count columns (import/export/scanning by 20/40)
   const hasCounts = findCol(headers, ["import20", "imp20", "export20", "exp20", "scanning20", "scan20", "checkpackage", "checkpkg"]) >= 0;
   if (containerHits >= 3 || hasContainer) return "container_pool";
@@ -516,6 +530,52 @@ export function extractDrivers(sheet: ParsedSheet): ImportedDriver[] {
       vehicleId: vCol >= 0 ? (r[vCol] || "").toUpperCase() || undefined : undefined,
     }];
   });
+}
+
+// Classify the terminal's "MODE OF OPERATION" into our movement categories.
+function classifyMode(mode: string): "import" | "export" | "scanning" | "checkpkg" {
+  const m = mode.toUpperCase();
+  if (m.includes("EXPORT")) return "export";
+  if (m.includes("CHECK PKG") || m.includes("CHECK PACKAGE")) return "checkpkg";
+  if (m.includes("SCANNING") && !m.includes("WITHOUT")) return "scanning";
+  return "import"; // DPD GATE IN (without scanning), enblock gate in, etc.
+}
+
+/**
+ * The terminal's CONTAINER-WISE transport report — one row per container move
+ * (truck, time, mode, from/to). We aggregate it into per-ITV-per-day trip counts
+ * (the same shape the Trip Log uses), matching the truck to an ITV by registration
+ * and the transporter to the vendor. Handles the real ~20k-row July file.
+ */
+export function extractTransportMoves(sheet: ParsedSheet): ImportedTripLog[] {
+  const h = sheet.rows[0];
+  const cCol = findCol(h, ["contno", "containerno", "container"]);
+  const sizeCol = findCol(h, ["contsize", "size"]);
+  const truckCol = findCol(h, ["intruckno", "truckno", "truck", "vehicle"]);
+  const dateCol = findCol(h, ["transactiondate", "date"]);
+  const transCol = findCol(h, ["transporter", "vendor"]);
+  const modeCol = findCol(h, ["modeofoperation", "operation", "mode"]);
+  if (cCol < 0 || truckCol < 0 || modeCol < 0) return [];
+  const today = new Date();
+  const defDate = `${String(today.getDate()).padStart(2, "0")}-${String(today.getMonth() + 1).padStart(2, "0")}-${today.getFullYear()}`;
+  const agg = new Map<string, ImportedTripLog>();
+  sheet.rows.slice(1).forEach((r) => {
+    const truck = (r[truckCol] || "").toUpperCase().trim();
+    if (!truck) return;
+    const date = (dateCol >= 0 ? r[dateCol] : "").trim() || defDate;
+    const size = /^4/.test((sizeCol >= 0 ? r[sizeCol] : "").trim()) ? 40 : 20; // 40 & 45 → 40
+    const cat = classifyMode(modeCol >= 0 ? r[modeCol] : "");
+    const vendor = transCol >= 0 ? (r[transCol] || "").trim() || undefined : undefined;
+    const key = `${date}|${truck}`;
+    let g = agg.get(key);
+    if (!g) { g = { date, driverName: "", itv: truck, vendor, imp20: 0, imp40: 0, exp20: 0, exp40: 0, scan20: 0, scan40: 0, checkPkg: 0 }; agg.set(key, g); }
+    if (vendor && !g.vendor) g.vendor = vendor;
+    if (cat === "import") size === 20 ? g.imp20++ : g.imp40++;
+    else if (cat === "export") size === 20 ? g.exp20++ : g.exp40++;
+    else if (cat === "scanning") size === 20 ? g.scan20++ : g.scan40++;
+    else g.checkPkg++;
+  });
+  return [...agg.values()];
 }
 
 export interface ImportedTripLog {

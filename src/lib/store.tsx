@@ -162,16 +162,18 @@ function matchDriver(s: AppState, name: string): Driver | undefined {
 // (the system file gives TEU + ITV, no driver), we look up the driver currently
 // mapped to that ITV. Keeps driver-wise productivity working from either source.
 function resolveLogDriver(s: AppState, log: Omit<DriverTripLog, "id" | "at" | "source">): Omit<DriverTripLog, "id" | "at" | "source"> {
+  // the transport report identifies the ITV by TRUCK REGISTRATION, not call sign —
+  // so match on either id or reg, then normalise the display to the call sign.
+  const key = (log.itv ?? "").toUpperCase();
+  const veh = key ? s.vehicles.find((v) => v.id.toUpperCase() === key || (v.reg && v.reg.toUpperCase() === key)) : undefined;
   let driver = log.driverName ? matchDriver(s, log.driverName) : undefined;
-  if (!driver && log.itv) {
-    const veh = s.vehicles.find((v) => v.id.toUpperCase() === log.itv!.toUpperCase());
-    if (veh?.driverId) driver = s.drivers.find((d) => d.id === veh.driverId);
-  }
+  if (!driver && veh?.driverId) driver = s.drivers.find((d) => d.id === veh.driverId);
   return {
     ...log,
+    itv: veh?.id ?? log.itv,               // reg → call sign when matched
     driverId: log.driverId ?? driver?.id,
     driverName: log.driverName || driver?.name || "",
-    vendor: log.vendor ?? driver?.vendor ?? s.vehicles.find((v) => v.id.toUpperCase() === (log.itv ?? "").toUpperCase())?.vendor,
+    vendor: log.vendor ?? driver?.vendor ?? veh?.vendor,
   };
 }
 

@@ -430,3 +430,11 @@ The `columns` hints on the cards updated to match. Parsing of the real files was
 **Trip Log** (was "Driver Log") — it's ITV-centric, not driver-centric. Renamed the tab. Added a **Driver / ITV / Vendor** view toggle on the totals (same data, three lenses). ITV-only rows (system file) still resolve their driver from the ITV↔driver mapping. Time-wise view pending real timestamped data.
 
 **Noted for next (awaiting the user's sample):** the **transport report** — the container-wise file (when / which container / which ITV / driver). Upload once → feeds Trip Log + a live insights dashboard, and is reflected across the relevant tabs. Principle confirmed: data uploaded once is accessible everywhere; tabs are just lenses on one shared pool.
+
+## 1 Aug 2026 — Transport report (container-wise) → Trip Log, auto-aggregated
+
+Decoded the real JUL transport report: 20,351 container moves × columns CONT NO, CONT SIZE (20/40/45), IN TRUCK NO (= ITV by registration), TRANSACTION DATE + TIME, TRANSPORTER (= vendor), MODE OF OPERATION (DPD gate-in w/o & w/ scanning, export loaded out, check-pkg in/out, enblock), FROM/TO LOCATION (terminals + CFS + mobile scanner).
+
+Wired a "Transport report (container-wise)" import type: parses the file, classifies each MODE → import/export/scanning/check-pkg, size → 20'/40', and AGGREGATES per ITV-per-day into the Trip Log. The truck registration resolves to the ITV call sign + mapped driver (via the ITV master, teammate's Number-Plate→reg fix); the transporter is the vendor. Verified on the real file: 20,351 moves → 3,606 ITV-day rows → 33,499 TEU, vendor split ACTIVE CARGO MOVERS 29,541 / Kailash 2,539 / Krishna Krupa 502 / etc. All three Trip Log lenses (driver / ITV / vendor) populate from one upload.
+
+Principle reaffirmed: data uploaded once flows to every relevant view — the tabs are lenses on one shared dataset, not silos.

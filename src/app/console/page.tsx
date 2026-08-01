@@ -5,7 +5,7 @@ import React, { useEffect, useState } from "react";
 import { useApp, RATE_CARD, SITE, SHIFT, HOT_JOBS, RETENTION } from "@/lib/store";
 import { DEPLOYMENT } from "@/lib/seed";
 import { fmtClock, fmtInr } from "@/lib/incentive";
-import { parseSheetDateMs, livePool, REPORT_FORMATS, formatById, guessFormat, extractContainersDiag, extractVehicles, extractDrivers, extractTripLogs } from "@/lib/importer";
+import { parseSheetDateMs, livePool, REPORT_FORMATS, formatById, guessFormat, extractContainersDiag, extractVehicles, extractDrivers, extractTripLogs, extractTransportMoves } from "@/lib/importer";
 import YardTab from "./YardTab";
 import AnalyticsPanel from "./AnalyticsPanel";
 import ItvPlannerTab from "./ItvPlannerTab";
@@ -757,6 +757,7 @@ function ImportModal({ fileName, sheets, defaultFormatId, onClose }: { fileName:
     }
     if (fmt.kind === "itv_master") return { sh, fmt, containers: [], vehicles: extractVehicles(sh), drivers: [], triplogs: [], diag: null };
     if (fmt.kind === "driver_triplog") return { sh, fmt, containers: [], vehicles: [], drivers: [], triplogs: extractTripLogs(sh), diag: null };
+    if (fmt.kind === "transport_report") return { sh, fmt, containers: [], vehicles: [], drivers: [], triplogs: extractTransportMoves(sh), diag: null };
     return { sh, fmt, containers: [], vehicles: [], drivers: extractDrivers(sh), triplogs: [], diag: null };
   });
 
@@ -767,7 +768,7 @@ function ImportModal({ fileName, sheets, defaultFormatId, onClose }: { fileName:
     if (b.fmt.kind === "container_pool") dispatch({ type: "importContainers", list: b.containers, source: fileName });
     if (b.fmt.kind === "itv_master") dispatch({ type: "importVehicles", list: b.vehicles });
     if (b.fmt.kind === "driver_master") dispatch({ type: "importDrivers", list: b.drivers });
-    if (b.fmt.kind === "driver_triplog") dispatch({ type: "importDriverLogs", list: b.triplogs });
+    if (b.fmt.kind === "driver_triplog" || b.fmt.kind === "transport_report") dispatch({ type: "importDriverLogs", list: b.triplogs });
     onClose();
   };
 
@@ -793,7 +794,7 @@ function ImportModal({ fileName, sheets, defaultFormatId, onClose }: { fileName:
         {built.map((b, i) => {
           const fmt = b.fmt;
           const isContainer = fmt?.kind === "container_pool";
-          const count = isContainer ? b.containers.length : fmt?.kind === "itv_master" ? b.vehicles.length : fmt?.kind === "driver_master" ? b.drivers.length : fmt?.kind === "driver_triplog" ? b.triplogs.length : 0;
+          const count = isContainer ? b.containers.length : fmt?.kind === "itv_master" ? b.vehicles.length : fmt?.kind === "driver_master" ? b.drivers.length : fmt?.kind === "driver_triplog" || fmt?.kind === "transport_report" ? b.triplogs.length : 0;
           return (
             <div key={i} className="border-t border-[#EDF0F5] pt-2.5">
               <div className="flex flex-wrap items-center justify-between gap-2">
@@ -838,6 +839,7 @@ function ImportModal({ fileName, sheets, defaultFormatId, onClose }: { fileName:
               {fmt?.kind === "itv_master" && <p className="text-[11px] text-[#5C6B80] mt-1">{b.vehicles.length} ITVs detected.</p>}
               {fmt?.kind === "driver_master" && <p className="text-[11px] text-[#5C6B80] mt-1">{b.drivers.length} drivers detected.</p>}
               {fmt?.kind === "driver_triplog" && <p className="text-[11px] text-[#5C6B80] mt-1">{b.triplogs.length} driver-day rows detected.</p>}
+              {fmt?.kind === "transport_report" && <p className="text-[11px] text-[#5C6B80] mt-1">{b.triplogs.length} ITV-day rows (from container moves).</p>}
 
               {/* raw preview */}
               <div className="overflow-x-auto mt-1.5">

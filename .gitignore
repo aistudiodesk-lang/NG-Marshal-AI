@@ -47,3 +47,4 @@ android/build/
 android/local.properties
 dist/
 .ngdata/
+_realdata/
