@@ -25,16 +25,24 @@ export PATH="$JAVA_HOME/bin:$ANDROID_HOME/platform-tools:$PATH"
 VERSION=$(node -p "require('./package.json').version")
 APK_OUT="dist/NG-Marshal-v${VERSION}.apk"
 
-# Connection mode — bake the shared backend into the static bundle if a server URL is given.
+# Connection mode. Two ways the APK connects to the shared data:
+#   (a) server.url in capacitor.config.ts → the app LOADS the live site (e.g. Vercel),
+#       so it shares whatever that site's backend shares. No STATE_URL needed.
+#   (b) bundled static export + NEXT_PUBLIC_STATE_URL → offline-capable shell that syncs
+#       to a self-host http server. Used when server.url is NOT set.
 STATE_URL="${NEXT_PUBLIC_STATE_URL:-}"
+SERVER_URL_LINE="$(grep -oE 'url:\s*SERVER_URL|url:\s*"https?://[^"]+"' capacitor.config.ts 2>/dev/null || true)"
 if [ -n "$STATE_URL" ]; then
   export NEXT_PUBLIC_BACKEND=http
   export NEXT_PUBLIC_STATE_URL="$STATE_URL"
   [ -n "${NEXT_PUBLIC_STATE_TOKEN:-}" ] && export NEXT_PUBLIC_STATE_TOKEN
-  echo "🔗 CONNECTED build — phone will sync with: $STATE_URL"
+  echo "🔗 BUNDLED + CONNECTED build — offline shell syncing to: $STATE_URL"
+elif [ -n "$SERVER_URL_LINE" ]; then
+  echo "🌐 LIVE-SITE build — the app loads the site set in capacitor.config.ts (server.url)."
+  echo "    Data is shared via that site's backend. Web/UI changes appear WITHOUT rebuilding the APK."
 else
-  echo "⚠️  STANDALONE build — no NEXT_PUBLIC_STATE_URL set; APK will NOT share data with the console."
-  echo "    To connect: NEXT_PUBLIC_STATE_URL=\"http://<server>:3000\" ./scripts/build-apk.sh"
+  echo "⚠️  STANDALONE build — no server.url and no NEXT_PUBLIC_STATE_URL; APK will NOT share data."
+  echo "    Connect via either capacitor server.url (live site) or NEXT_PUBLIC_STATE_URL (self-host)."
 fi
 
 echo "── 1/4 static export (api routes excluded — unsupported in export mode)"
