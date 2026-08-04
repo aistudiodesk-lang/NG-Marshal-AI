@@ -248,6 +248,16 @@ export interface DriverTripLog {
   firstMin?: number;   // first gate event of the day (minutes since midnight)
   lastMin?: number;    // last gate event
   avgGapMin?: number;  // average minutes between this truck's consecutive moves = cycle time
+  // ── TAT cycles (the SLA spine) — one entry per completed cycle this truck-day,
+  //    tagged by SLA class, holding the cycle's minutes. Coarse today (gate→next-gate
+  //    proxy from the transport report); precise per-leg once the parchi scan lands. ──
+  cycles?: CycleTat[];
+}
+
+// One ITV cycle's turnaround, the atom the SLA engine measures.
+export interface CycleTat {
+  c: SlaClass; // which SLA target it is judged against
+  m: number;   // total turnaround minutes for this cycle
 }
 
 /** Active span for a truck's day, in hours (last move − first move). */
@@ -278,6 +288,68 @@ export function logIncentive(l: DriverTripLog, rc: RateCard, milestoneTeu: numbe
   const base = t.import * rc.perTeu.import + t.export * rc.perTeu.export + t.scanning * rc.perTeu.scanning + t.check_package * rc.perTeu.check_package;
   const milestone = milestoneTeu > 0 && logTeu(l) >= milestoneTeu ? rc.milestoneBonus : 0;
   return Math.round(base + milestone);
+}
+
+// ── SLA / TAT — the spine ─────────────────────────────────────────────────────
+// Four SLA turnaround targets. On-berth vs Normal check-package share every touch
+// point — they differ ONLY in target + priority (a vessel at berth is tight). The
+// clock is the same object; the class just picks which target it is judged against.
+export type SlaClass = "import" | "export" | "checkpkg_onberth" | "checkpkg_normal";
+
+export type SlaPriority = "normal" | "before_cutoff" | "urgent";
+
+export interface SlaTarget {
+  targetMin: number;   // the TAT target for this class (from the study baseline, editable)
+  priority: SlaPriority;
+  atRiskPct: number;   // fraction of target at which a running cycle is flagged "at risk" (e.g. 0.8)
+}
+
+export type SlaConfig = Record<SlaClass, SlaTarget>;
+
+// Seeded from the Excel study baselines (Import ≈ 91, Export ≈ 152, Check ≈ 185 min).
+// On-berth is given the same 185 target but urgent priority + a tighter at-risk trip.
+export const DEFAULT_SLA_CONFIG: SlaConfig = {
+  import: { targetMin: 91, priority: "normal", atRiskPct: 0.8 },
+  export: { targetMin: 152, priority: "before_cutoff", atRiskPct: 0.8 },
+  checkpkg_onberth: { targetMin: 185, priority: "urgent", atRiskPct: 0.7 },
+  checkpkg_normal: { targetMin: 185, priority: "normal", atRiskPct: 0.8 },
+};
+
+export const SLA_CLASS_LABEL: Record<SlaClass, string> = {
+  import: "Import",
+  export: "Export",
+  checkpkg_onberth: "Check pkg · On-berth",
+  checkpkg_normal: "Check pkg · Normal",
+};
+
+export const SLA_CLASS_ORDER: SlaClass[] = ["import", "export", "checkpkg_onberth", "checkpkg_normal"];
+
+export const SLA_PRIORITY_LABEL: Record<SlaPriority, string> = {
+  normal: "Normal",
+  before_cutoff: "Before cut-off",
+  urgent: "Urgent",
+};
+
+/**
+ * Map a movement (and, for check-package, its check type) to an SLA class.
+ * The transport report has no On-berth/Normal split — unlabelled check-package
+ * defaults to Normal; the driver form's "circle On-berth / Normal" fills it later.
+ * Scanning is a movement but NOT one of the four SLA TATs → returns null.
+ */
+export function slaClassOf(movement: "import" | "export" | "scanning" | "checkpkg", checkType?: "onberth" | "normal"): SlaClass | null {
+  if (movement === "import") return "import";
+  if (movement === "export") return "export";
+  if (movement === "checkpkg") return checkType === "onberth" ? "checkpkg_onberth" : "checkpkg_normal";
+  return null; // scanning — not an SLA TAT
+}
+
+export type SlaStatus = "within" | "at_risk" | "breach";
+
+/** Where a cycle's TAT sits against its target. `running` = the cycle is still open. */
+export function slaStatusOf(min: number, t: SlaTarget, running = false): SlaStatus {
+  if (min > t.targetMin) return "breach";
+  if (running && min >= t.targetMin * t.atRiskPct) return "at_risk";
+  return "within";
 }
 
 export interface TripEarnings {

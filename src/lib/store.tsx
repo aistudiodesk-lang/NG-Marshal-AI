@@ -3,7 +3,7 @@
 import React, { createContext, useContext, useEffect, useReducer, useRef } from "react";
 import { getDataStore } from "./data";
 import type { DataStore } from "./data/DataStore";
-import { Assignment, Driver, Equipment, EquipmentLog, Issue, MovementType, Offer, Operator, PlanProposal, PlanRules, RateCard, Site, SummaryNotes, Trip, Vehicle, Vendor, Verification, ContainerHistory, FeedSnapshot, DutyPriority, isLive, DriverTripLog } from "./types";
+import { Assignment, Driver, Equipment, EquipmentLog, Issue, MovementType, Offer, Operator, PlanProposal, PlanRules, RateCard, Site, SummaryNotes, Trip, Vehicle, Vendor, Verification, ContainerHistory, FeedSnapshot, DutyPriority, isLive, DriverTripLog, SlaConfig, DEFAULT_SLA_CONFIG } from "./types";
 import {
   DEFAULT_SUMMARY_NOTES, DRIVERS, EQUIPMENT, HOT_JOBS, ME_DRIVER_ID, ME_VEHICLE_ID, OPERATORS, PLAN_RULES, RATE_CARD, SEED_ISSUES,
   SEED_TRIPS, SHIFT, SITE, SITES, SUPERVISORS, VEHICLES,
@@ -42,6 +42,7 @@ export interface AppState {
   meDriverId: string; // whose driver-view this device shows — set from device identity at onboarding, NEVER synced
   rateCard: RateCard; // editable settings — drives ALL incentive math
   milestoneTeu: number; // celebration threshold, editable
+  slaConfig: SlaConfig; // TAT targets per SLA class — drives ALL breach/at-risk judgement
   offer: Offer | null;
   nextOfferIn: number; // seconds until next offer while idle on duty
   nextTripId: number;
@@ -84,6 +85,7 @@ type Action =
   | { type: "addDriver"; name: string; phone: string; vendor: string; note?: string }
   | { type: "mapDriver"; vehicleId: string; driverId: string | null }
   | { type: "updateSettings"; rateCard: RateCard; milestoneTeu: number }
+  | { type: "setSlaConfig"; config: SlaConfig }
   | { type: "setActiveSite"; siteId: string }
   | { type: "quickAllocate"; vendor: string; count: number; target: string; purpose: MovementType; pickup?: string }
   | { type: "setVehiclePrefs"; vehicleId: string; restrictTo?: MovementType[]; preferFor?: MovementType[]; priorityFor?: DutyPriority }
@@ -829,6 +831,10 @@ function coreReducer(s: AppState, a: Action): AppState {
       return { ...s, rateCard, milestoneTeu: a.milestoneTeu, issues: [issue, ...s.issues], nextIssueId: s.nextIssueId + 1, toast: `Rate card ${rateCard.version} live` };
     }
 
+    case "setSlaConfig": {
+      return { ...s, slaConfig: a.config, toast: "SLA targets updated" };
+    }
+
     case "addEquipment": {
       if (!a.id.trim()) return s;
       const equipment: Equipment[] = [
@@ -1018,6 +1024,7 @@ function coreReducer(s: AppState, a: Action): AppState {
         activeSiteId: a.state.activeSiteId ?? s.activeSiteId,
         planRules: a.state.planRules ?? s.planRules,
         summaryNotes: a.state.summaryNotes ?? s.summaryNotes,
+        slaConfig: a.state.slaConfig ?? s.slaConfig,
         proposal: null,
         pool: a.state.pool ?? s.pool ?? [],
         equipment: a.state.equipment ?? s.equipment ?? [],
@@ -1069,6 +1076,7 @@ const initial: AppState = {
   meDriverId: ME_DRIVER_ID, // web-demo default; device identity overrides via setMe
   rateCard: RATE_CARD,
   milestoneTeu: SITE.perItvTeuTarget,
+  slaConfig: DEFAULT_SLA_CONFIG,
   assignments: {
     A198: { target: "SCAN", purpose: "scanning" },
     A408: { target: "T2", purpose: "export", pickup: "EXIM-1" },
@@ -1113,7 +1121,7 @@ function applyRetention(s: AppState): AppState {
 
 const PERSIST_KEYS = [
   "drivers", "vehicles", "trips", "issues", "assignments", "pool", "history", "feeds", "lastFeedAt",
-  "vendors", "rateCard", "milestoneTeu", "sites", "activeSiteId", "planRules", "summaryNotes",
+  "vendors", "rateCard", "milestoneTeu", "slaConfig", "sites", "activeSiteId", "planRules", "summaryNotes",
   "equipment", "operators", "equipmentLogs", "nextLogId",
   "driverLogs", "nextDriverLogId",
   "nextTripId", "nextIssueId", "passesThisShift", "milestoneHit",

@@ -11,12 +11,13 @@ import AnalyticsPanel from "./AnalyticsPanel";
 import ItvPlannerTab from "./ItvPlannerTab";
 import DriverLogTab from "./DriverLogTab";
 import DriversTab from "./DriversTab";
-import { EQUIPMENT_TYPE_LABEL, EquipmentType, Issue, MOVEMENT_LABEL, MovementType, VehicleStatus, DUTY_LABEL, DutyPriority, isLive } from "@/lib/types";
+import SlaTab from "./SlaTab";
+import { EQUIPMENT_TYPE_LABEL, EquipmentType, Issue, MOVEMENT_LABEL, MovementType, VehicleStatus, DUTY_LABEL, DutyPriority, isLive, SlaClass, SlaConfig, SlaPriority, SLA_CLASS_ORDER, SLA_CLASS_LABEL, SLA_PRIORITY_LABEL } from "@/lib/types";
 import { Wordmark } from "@/components/Brand";
 
 // The command centre comes FIRST — the dashboard is always the landing screen.
 // The EXIM pendency report (your Excel format) is its own tab right beside it.
-type Tab = "dashboard" | "pendency" | "yard" | "planning" | "itv" | "driverlog" | "drivers" | "setup";
+type Tab = "dashboard" | "pendency" | "yard" | "planning" | "itv" | "driverlog" | "drivers" | "sla" | "setup";
 
 const TABS: { id: Tab; label: string; purpose: string }[] = [
   { id: "dashboard", label: "Dashboard",   purpose: "THE WHOLE PICTURE — deployment, fleet status, trips, hot list, open issues and shift analytics, live." },
@@ -26,7 +27,8 @@ const TABS: { id: Tab; label: string; purpose: string }[] = [
   { id: "itv",       label: "ITV Planner", purpose: "PLAN THE FLEET — everything to plan the ITVs in one place: mark who's live, read the demand, quick-allocate or auto-plan, send each ITV, confirm." },
   { id: "driverlog", label: "Trip Log",    purpose: "CAPTURE — log ITV / driver trips & TEU per day (import / export / scanning, 20' & 40'). Upload a summary or type it in; view by driver, ITV or vendor." },
   { id: "drivers",   label: "Drivers",     purpose: "PEOPLE — driver-wise trips, TEU and ₹ incentive from the trip logs. Sort by any column, filter by date, export the incentive report." },
-  { id: "setup",     label: "Setup",       purpose: "CONFIGURE — masters (vendors, ITVs, drivers), equipment & operators, rate card, incentives, planning rules." },
+  { id: "sla",       label: "SLA / TAT",   purpose: "THE CLOCK — turnaround time vs SLA target per class (Import, Export, Check-pkg On-berth / Normal). Breach rate, and which ITVs / vendors / drivers / days miss the mark." },
+  { id: "setup",     label: "Setup",       purpose: "CONFIGURE — masters (vendors, ITVs, drivers), equipment & operators, rate card, incentives, SLA targets, planning rules." },
 ];
 
 const STATUS_STYLE: Record<VehicleStatus, { label: string; cls: string }> = {
@@ -634,7 +636,9 @@ Completed this shift:${liveTeu}
         {tab === "setup" && <StoragePanel />}
         {tab === "driverlog" && <DriverLogTab />}
         {tab === "drivers" && <DriversTab />}
+        {tab === "sla" && <SlaTab />}
         {tab === "setup" && <MastersTab />}
+        {tab === "setup" && <SlaTargetsPanel />}
         {tab === "setup" && <EquipmentTab />}
       </div>
 
@@ -1153,6 +1157,60 @@ const EQUIP_STATUS_STYLE: Record<string, { label: string; cls: string }> = {
 };
 
 const EQUIPMENT_TYPES = Object.keys(EQUIPMENT_TYPE_LABEL) as EquipmentType[];
+
+// SLA TARGETS — the TAT thresholds that judge every cycle. Seeded from the study
+// baseline; edit here and history is re-judged (breach is computed live, not baked in).
+function SlaTargetsPanel() {
+  const { state, dispatch } = useApp();
+  const [draft, setDraft] = useState<SlaConfig>(state.slaConfig);
+  const dirty = JSON.stringify(draft) !== JSON.stringify(state.slaConfig);
+
+  const setField = (c: SlaClass, patch: Partial<SlaConfig[SlaClass]>) => setDraft((d) => ({ ...d, [c]: { ...d[c], ...patch } }));
+
+  return (
+    <div className="bg-white border border-[#D8DEE7] rounded-xl p-4 mt-4">
+      <div className="flex flex-wrap items-center justify-between gap-2 mb-1">
+        <p className="text-[11px] tracking-[0.1em] uppercase text-[#5C6B80] font-bold">SLA targets · turnaround (TAT)</p>
+        <div className="flex items-center gap-2">
+          {dirty && <button onClick={() => setDraft(state.slaConfig)} className="text-[11.5px] font-bold text-[#5C6B80] border border-[#D8DEE7] rounded px-2.5 py-1.5">Reset</button>}
+          <button onClick={() => dispatch({ type: "setSlaConfig", config: draft })} disabled={!dirty} className="text-[12px] font-bold text-white bg-[#1E9E5A] rounded px-3.5 py-1.5 disabled:opacity-40">Save targets</button>
+        </div>
+      </div>
+      <p className="text-[12px] text-[#5C6B80] mb-3">Each cycle&apos;s TAT is judged against its class target. On-berth and Normal check-package share the touch points — only the target &amp; priority differ. Baselines: Import ≈ 91, Export ≈ 152, Check ≈ 185 min.</p>
+      <div className="overflow-x-auto">
+        <table className="w-full text-[12px] whitespace-nowrap">
+          <thead>
+            <tr className="text-[10px] uppercase tracking-[0.06em] text-[#5C6B80]">
+              <th className="text-left font-bold px-2 py-1.5 border-b border-[#D8DEE7]">SLA class</th>
+              <th className="text-left font-bold px-2 py-1.5 border-b border-[#D8DEE7]">Target (min)</th>
+              <th className="text-left font-bold px-2 py-1.5 border-b border-[#D8DEE7]">At-risk at</th>
+              <th className="text-left font-bold px-2 py-1.5 border-b border-[#D8DEE7]">Priority</th>
+            </tr>
+          </thead>
+          <tbody>
+            {SLA_CLASS_ORDER.map((c) => (
+              <tr key={c} className="border-b border-[#EDF0F5]">
+                <td className="px-2 py-1.5 font-semibold">{SLA_CLASS_LABEL[c]}</td>
+                <td className="px-2 py-1.5">
+                  <input type="number" min={1} value={draft[c].targetMin} onChange={(e) => setField(c, { targetMin: Math.max(1, Number(e.target.value) || 0) })} className="w-20 border border-[#D8DEE7] rounded-md px-2 py-1 text-[12px] tabular-nums" /> <span className="text-[#96A2B4]">min</span>
+                </td>
+                <td className="px-2 py-1.5">
+                  <input type="number" min={1} max={100} value={Math.round(draft[c].atRiskPct * 100)} onChange={(e) => setField(c, { atRiskPct: Math.min(1, Math.max(0.1, (Number(e.target.value) || 80) / 100)) })} className="w-16 border border-[#D8DEE7] rounded-md px-2 py-1 text-[12px] tabular-nums" /> <span className="text-[#96A2B4]">% of target</span>
+                </td>
+                <td className="px-2 py-1.5">
+                  <select value={draft[c].priority} onChange={(e) => setField(c, { priority: e.target.value as SlaPriority })} className="border border-[#D8DEE7] rounded-md px-2 py-1 text-[12px] font-semibold">
+                    {(["normal", "before_cutoff", "urgent"] as SlaPriority[]).map((p) => <option key={p} value={p}>{SLA_PRIORITY_LABEL[p]}</option>)}
+                  </select>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <p className="text-[10.5px] text-[#5C6B80] mt-2">A running cycle is flagged <b className="text-[#9A6206]">at risk</b> once it passes this % of target, and <b className="text-[#C0392B]">breach</b> once it exceeds it. Changing a target re-judges all history instantly.</p>
+    </div>
+  );
+}
 
 function EquipmentTab() {
   const { state, dispatch } = useApp();

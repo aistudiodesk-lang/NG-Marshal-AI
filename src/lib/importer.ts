@@ -2,7 +2,7 @@
 // Built to be tested against the real 3-hr pendency Excel, cutoff files, and ITV/driver masters.
 import * as XLSX from "xlsx";
 import { isValidContainerNo } from "./incentive";
-import { ContainerHistory } from "./types";
+import { ContainerHistory, CycleTat, slaClassOf } from "./types";
 
 export type ImportKind = "container_pool" | "itv_master" | "driver_master" | "driver_triplog" | "transport_report" | "unknown";
 
@@ -560,7 +560,9 @@ export function extractTransportMoves(sheet: ParsedSheet): ImportedTripLog[] {
   const today = new Date();
   const defDate = `${String(today.getDate()).padStart(2, "0")}-${String(today.getMonth() + 1).padStart(2, "0")}-${today.getFullYear()}`;
   const parseMin = (t: string) => { const m = (t || "").match(/(\d{1,2}):(\d{2})/); return m ? Number(m[1]) * 60 + Number(m[2]) : NaN; };
-  const agg = new Map<string, ImportedTripLog & { _times: number[] }>();
+  type Cat = "import" | "export" | "scanning" | "checkpkg";
+  type Ev = { min: number; cat: Cat };
+  const agg = new Map<string, ImportedTripLog & { _ev: Ev[] }>();
   sheet.rows.slice(1).forEach((r) => {
     const truck = (r[truckCol] || "").toUpperCase().trim();
     if (!truck) return;
@@ -570,24 +572,33 @@ export function extractTransportMoves(sheet: ParsedSheet): ImportedTripLog[] {
     const vendor = transCol >= 0 ? (r[transCol] || "").trim() || undefined : undefined;
     const key = `${date}|${truck}`;
     let g = agg.get(key);
-    if (!g) { g = { date, driverName: "", itv: truck, vendor, imp20: 0, imp40: 0, exp20: 0, exp40: 0, scan20: 0, scan40: 0, checkPkg: 0, _times: [] }; agg.set(key, g); }
+    if (!g) { g = { date, driverName: "", itv: truck, vendor, imp20: 0, imp40: 0, exp20: 0, exp40: 0, scan20: 0, scan40: 0, checkPkg: 0, _ev: [] }; agg.set(key, g); }
     if (vendor && !g.vendor) g.vendor = vendor;
     if (cat === "import") size === 20 ? g.imp20++ : g.imp40++;
     else if (cat === "export") size === 20 ? g.exp20++ : g.exp40++;
     else if (cat === "scanning") size === 20 ? g.scan20++ : g.scan40++;
     else g.checkPkg++;
     const min = parseMin(timeCol >= 0 ? r[timeCol] : "");
-    if (!isNaN(min)) g._times.push(min);
+    if (!isNaN(min)) g._ev.push({ min, cat });
   });
-  // per truck-day, turn the move times into cycle-time stats
-  return [...agg.values()].map(({ _times, ...g }) => {
-    const t = _times.sort((a, b) => a - b);
-    if (t.length >= 2) {
-      const gaps = t.slice(1).map((v, i) => v - t[i]).filter((x) => x > 0);
-      const avgGap = gaps.length ? Math.round(gaps.reduce((a, b) => a + b, 0) / gaps.length) : undefined;
-      return { ...g, firstMin: t[0], lastMin: t[t.length - 1], avgGapMin: avgGap };
+  // per truck-day, turn the move times into cycle-time stats AND per-class TAT cycles.
+  // A "cycle" is one gate event → this truck's next gate event (the coarse gate→gate
+  // proxy, until the parchi scan gives precise per-leg times); it is attributed to the
+  // class of the move just completed. Scanning is not an SLA TAT, so it forms no cycle.
+  return [...agg.values()].map(({ _ev, ...g }) => {
+    const ev = _ev.sort((a, b) => a.min - b.min);
+    if (ev.length < 2) return g;
+    const gapsAll: number[] = [];
+    const cycles: CycleTat[] = [];
+    for (let i = 0; i < ev.length - 1; i++) {
+      const gap = ev[i + 1].min - ev[i].min;
+      if (gap <= 0) continue;
+      gapsAll.push(gap);
+      const cls = slaClassOf(ev[i].cat);
+      if (cls) cycles.push({ c: cls, m: gap });
     }
-    return g;
+    const avgGap = gapsAll.length ? Math.round(gapsAll.reduce((a, b) => a + b, 0) / gapsAll.length) : undefined;
+    return { ...g, firstMin: ev[0].min, lastMin: ev[ev.length - 1].min, avgGapMin: avgGap, cycles: cycles.length ? cycles : undefined };
   });
 }
 
@@ -596,6 +607,7 @@ export interface ImportedTripLog {
   imp20: number; imp40: number; exp20: number; exp40: number;
   scan20: number; scan40: number; checkPkg: number; remarks?: string;
   firstMin?: number; lastMin?: number; avgGapMin?: number;
+  cycles?: CycleTat[];
 }
 
 /** Parse a daily driver trip-log sheet into per-driver rows. */
