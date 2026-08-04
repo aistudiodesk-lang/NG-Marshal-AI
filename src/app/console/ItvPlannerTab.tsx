@@ -120,14 +120,17 @@ export default function ItvPlannerTab({ site, allocateBar, proposal }: { site: S
 
   const vendors = useMemo(() => [...new Set(state.vehicles.map((v) => v.vendor))].sort(), [state.vehicles]);
 
-  const fleet = state.vehicles.filter((v) => {
-    if (vendorFilter !== "all" && v.vendor !== vendorFilter) return false;
-    if (onlyLive && !isLive(v)) return false;
-    const a = state.assignments[v.id];
-    if (onlyUnassigned && a) return false;
-    if (queueFilter !== "all" && (!a || `${a.target}·${a.purpose}` !== queueFilter)) return false;
-    return true;
-  });
+  const fleet = state.vehicles
+    .filter((v) => {
+      if (vendorFilter !== "all" && v.vendor !== vendorFilter) return false;
+      if (onlyLive && !isLive(v)) return false;
+      const a = state.assignments[v.id];
+      if (onlyUnassigned && a) return false;
+      if (queueFilter !== "all" && (!a || `${a.target}·${a.purpose}` !== queueFilter)) return false;
+      return true;
+    })
+    // urgent diversions ride at the top of the board so the yard can't miss them
+    .sort((x, y) => Number(!!state.assignments[y.id]?.priority) - Number(!!state.assignments[x.id]?.priority));
 
   const liveCounts = useMemo(() => {
     const c = { confirmed: 0, manual: 0, app: 0, none: 0 };
@@ -231,6 +234,12 @@ export default function ItvPlannerTab({ site, allocateBar, proposal }: { site: S
         </div>
       </div>
 
+      {/* ── PRIORITY — the manual urgent override, above the plan ── */}
+      <PriorityAllocate
+        options={allQueues.map((q) => ({ key: q.key, label: q.label }))}
+        fleet={state.vehicles}
+      />
+
       {/* ── ALLOCATE — quick batches + auto-plan, right where the demand is ── */}
       {allocateBar}
       {proposal}
@@ -277,9 +286,11 @@ export default function ItvPlannerTab({ site, allocateBar, proposal }: { site: S
                 const notLive = rosterStarted && ls === "none";
                 const blocked = eligibility(v, a?.purpose ?? null) ?? (notLive ? "not marked live this shift" : null);
                 const markName = v.live?.manual?.driverName;
+                const urgent = !!a?.priority;
                 return (
-                  <tr key={v.id} className={`border-b border-[#EDF0F5] ${blocked ? "bg-[#FDF6F5]" : ""}`}>
+                  <tr key={v.id} className={`border-b border-[#EDF0F5] ${urgent ? "bg-[#FDECEA] border-l-4 border-l-[#C0392B]" : blocked ? "bg-[#FDF6F5]" : ""}`}>
                     <td className="px-2 py-2 font-mono font-extrabold text-[13px]">
+                      {urgent ? <span className="mr-1" title="Urgent priority">⚡</span> : null}
                       {v.id}
                       {v.restrictTo?.length ? <span title={`Only: ${v.restrictTo.map((m) => MOVEMENT_LABEL[m]).join(", ")}`} className="ml-1">🔒</span> : null}
                       {v.preferFor?.length ? <span title={`Prefers: ${v.preferFor.map((m) => MOVEMENT_LABEL[m]).join(", ")}`} className="ml-1">★</span> : null}
@@ -326,15 +337,26 @@ export default function ItvPlannerTab({ site, allocateBar, proposal }: { site: S
                           {movements.map((q) => <option key={q.key} value={q.key}>{q.label}</option>)}
                         </optgroup>
                       </select>
+                      {urgent && (a?.customer || a?.note || a?.divertedFrom) && (
+                        <p className="text-[10.5px] font-semibold text-[#C0392B] mt-1 whitespace-normal max-w-52">
+                          ⚡ {[a.customer, a.note].filter(Boolean).join(" · ")}
+                          {a.divertedFrom && <span className="text-[#9A6206]"> · diverted from {a.divertedFrom}</span>}
+                        </p>
+                      )}
                     </td>
                     <td className="px-2 py-2">
                       {!a ? <span className="text-[#5C6B80]">—</span>
-                        : a.commit === "confirmed"
-                          ? <span className="text-[#177A47] font-bold">✓ Confirmed</span>
-                          : <button onClick={() => dispatch({ type: "commitAssignments", vehicleIds: [v.id] })} className="text-[11.5px] font-bold text-[#9A6206] bg-[#FDF3E3] rounded px-2 py-1">◇ Tentative — confirm</button>}
+                        : urgent
+                          ? <span className="text-[#C0392B] font-bold">⚡ Urgent</span>
+                          : a.commit === "confirmed"
+                            ? <span className="text-[#177A47] font-bold">✓ Confirmed</span>
+                            : <button onClick={() => dispatch({ type: "commitAssignments", vehicleIds: [v.id] })} className="text-[11.5px] font-bold text-[#9A6206] bg-[#FDF3E3] rounded px-2 py-1">◇ Tentative — confirm</button>}
                     </td>
                     <td className="px-2 py-2">
-                      {blocked && <span className="text-[11px] font-semibold text-[#C0392B]">{blocked}</span>}
+                      {blocked && <span className="text-[11px] font-semibold text-[#C0392B] block mb-1">{blocked}</span>}
+                      {a && (urgent
+                        ? <button onClick={() => dispatch({ type: "setPriority", vehicleId: v.id, priority: false })} className="text-[10.5px] font-bold text-[#5C6B80] border border-[#D8DEE7] rounded px-2 py-1">clear ⚡</button>
+                        : <button onClick={() => dispatch({ type: "setPriority", vehicleId: v.id, priority: true })} title="Make this an urgent priority job" className="text-[10.5px] font-bold text-[#C0392B] border border-[#C0392B]/40 rounded px-2 py-1 hover:bg-[#FDECEA]">⚡ Urgent</button>)}
                     </td>
                   </tr>
                 );
@@ -344,9 +366,95 @@ export default function ItvPlannerTab({ site, allocateBar, proposal }: { site: S
           {fleet.length === 0 && <p className="text-[12px] text-[#5C6B80] py-6 text-center">No ITV matches these filters.</p>}
         </div>
         <p className="text-[11px] text-[#5C6B80] mt-3">
-          Live: <b className="text-[#0F5C34]">✓ Confirmed</b> (supervisor + driver app agree) · <b className="text-[#9A6206]">Manual</b> (supervisor only) · <b className="text-[#1F3864]">App</b> (driver only) · 🔒 restricted · ★ preferred · ◇ tentative · ✓ confirmed assignment
+          Live: <b className="text-[#0F5C34]">✓ Confirmed</b> (supervisor + driver app agree) · <b className="text-[#9A6206]">Manual</b> (supervisor only) · <b className="text-[#1F3864]">App</b> (driver only) · 🔒 restricted · ★ preferred · ◇ tentative · ✓ confirmed assignment · <b className="text-[#C0392B]">⚡ urgent</b> (manual priority — pinned to the top, never auto-swept)
         </p>
       </div>
+    </div>
+  );
+}
+
+/**
+ * PRIORITY ALLOCATE — the manual urgent override. When something changes mid-shift
+ * (an important customer needs a box now, an urgent check-package), the planner pins
+ * an ITV to a duty here — regardless of the round-trip plan. It assigns as CONFIRMED
+ * + priority, records the customer/reason, and if the ITV was mid-job it captures the
+ * diversion. Live overrides are listed so they can be cleared once done.
+ */
+function PriorityAllocate({ options, fleet }: { options: { key: string; label: string }[]; fleet: Vehicle[] }) {
+  const { state, dispatch } = useApp();
+  const [open, setOpen] = useState(false);
+  const [itv, setItv] = useState("");
+  const [dest, setDest] = useState("");
+  const [customer, setCustomer] = useState("");
+  const [reason, setReason] = useState("");
+
+  const active = Object.entries(state.assignments).filter(([, a]) => a.priority);
+
+  const send = () => {
+    if (!itv || !dest) return;
+    const [target, purpose] = dest.split("·");
+    dispatch({
+      type: "assignVehicle",
+      vehicleId: itv,
+      assignment: { target, purpose: purpose as MovementType, commit: "confirmed", priority: true, customer: customer.trim() || undefined, note: reason.trim() || undefined, by: "Planner · console" },
+    });
+    setItv(""); setDest(""); setCustomer(""); setReason(""); setOpen(false);
+  };
+
+  return (
+    <div className="bg-white border-2 border-[#F2C7C1] rounded-xl p-4">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div>
+          <p className="text-[11px] tracking-[0.1em] uppercase text-[#C0392B] font-bold">⚡ Priority allocate · urgent override</p>
+          <p className="text-[12px] text-[#5C6B80] mt-0.5">
+            Something changed — an important customer needs a box now, or an urgent check-package. Pin any ITV to a duty, even one already on a job. It jumps to the top of the fleet in red and auto-plan never touches it.
+          </p>
+        </div>
+        <button onClick={() => setOpen((o) => !o)} className="bg-[#C0392B] text-white text-[12px] font-bold px-3.5 py-2 rounded-md whitespace-nowrap">⚡ New urgent job</button>
+      </div>
+
+      {open && (
+        <div className="mt-3 border-t border-[#F2C7C1] pt-3 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-2 items-end">
+          <label className="flex flex-col gap-1 text-[10.5px] font-bold uppercase tracking-[0.06em] text-[#5C6B80]">
+            ITV
+            <select value={itv} onChange={(e) => setItv(e.target.value)} className="border border-[#D8DEE7] rounded-md px-2 py-1.5 text-[12px] font-semibold font-mono">
+              <option value="">— pick ITV —</option>
+              {fleet.map((v) => {
+                const a = state.assignments[v.id];
+                return <option key={v.id} value={v.id}>{v.id}{a ? ` (on ${a.target})` : ""}</option>;
+              })}
+            </select>
+          </label>
+          <label className="flex flex-col gap-1 text-[10.5px] font-bold uppercase tracking-[0.06em] text-[#5C6B80]">
+            Send to
+            <select value={dest} onChange={(e) => setDest(e.target.value)} className="border border-[#D8DEE7] rounded-md px-2 py-1.5 text-[12px] font-semibold">
+              <option value="">— pick duty —</option>
+              {options.map((o) => <option key={o.key} value={o.key}>{o.label}</option>)}
+            </select>
+          </label>
+          <label className="flex flex-col gap-1 text-[10.5px] font-bold uppercase tracking-[0.06em] text-[#5C6B80]">
+            Customer <span className="font-medium normal-case tracking-normal text-[#96A2B4]">(optional)</span>
+            <input value={customer} onChange={(e) => setCustomer(e.target.value)} placeholder="e.g. Maersk" className="border border-[#D8DEE7] rounded-md px-2 py-1.5 text-[12px]" />
+          </label>
+          <label className="flex flex-col gap-1 text-[10.5px] font-bold uppercase tracking-[0.06em] text-[#5C6B80]">
+            Reason <span className="font-medium normal-case tracking-normal text-[#96A2B4]">(optional)</span>
+            <input value={reason} onChange={(e) => setReason(e.target.value)} placeholder="e.g. vessel cut-off 6pm" className="border border-[#D8DEE7] rounded-md px-2 py-1.5 text-[12px]" />
+          </label>
+          <button onClick={send} disabled={!itv || !dest} className="bg-[#C0392B] text-white text-[12px] font-bold px-4 py-2 rounded-md disabled:opacity-40 h-fit">⚡ Pin urgent ▸</button>
+        </div>
+      )}
+
+      {active.length > 0 && (
+        <div className="mt-3 flex flex-wrap gap-2">
+          {active.map(([id, a]) => (
+            <span key={id} className="inline-flex items-center gap-1.5 text-[11px] font-semibold bg-[#FDECEA] text-[#C0392B] border border-[#F2C7C1] rounded-full pl-2.5 pr-1.5 py-1">
+              ⚡ <b className="font-mono">{id}</b> → {options.find((o) => o.key === `${a.target}·${a.purpose}`)?.label ?? a.target}
+              {a.customer ? ` · ${a.customer}` : ""}
+              <button onClick={() => dispatch({ type: "setPriority", vehicleId: id, priority: false })} title="Clear priority" className="ml-0.5 text-[#C0392B] font-bold hover:bg-[#F7D5D0] rounded-full w-4 h-4 leading-none">✕</button>
+            </span>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

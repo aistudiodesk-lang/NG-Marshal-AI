@@ -73,6 +73,7 @@ type Action =
   | { type: "reportEquipmentIssue"; equipmentId: string; by: string }
   | { type: "assignVehicle"; vehicleId: string; assignment: Assignment }
   | { type: "commitAssignments"; vehicleIds: string[] }
+  | { type: "setPriority"; vehicleId: string; priority: boolean; customer?: string; reason?: string; by?: string }
   | { type: "clearAssignment"; vehicleId: string }
   | { type: "unassignVehicle"; vehicleId: string }
   | { type: "importContainers"; list: ImportedContainer[]; source: string }
@@ -623,6 +624,30 @@ function coreReducer(s: AppState, a: Action): AppState {
       return { ...s, assignments, toast: n ? `${n} assignment${n === 1 ? "" : "s"} confirmed` : "Nothing to confirm" };
     }
 
+    case "setPriority": {
+      // Flip an existing assignment to/from urgent. Priority forces CONFIRMED so
+      // auto-plan never sweeps it. Turning it off leaves the assignment in place.
+      const prev = s.assignments[a.vehicleId];
+      if (!prev) return { ...s, toast: `${a.vehicleId} has no assignment to prioritise — send it somewhere first` };
+      const next: Assignment = a.priority
+        ? { ...prev, priority: true, commit: "confirmed", customer: a.customer || prev.customer, note: a.reason || prev.note, by: a.by || "Planner · console", at: s.now }
+        : { ...prev, priority: false, customer: undefined, divertedFrom: undefined };
+      return {
+        ...s,
+        assignments: { ...s.assignments, [a.vehicleId]: next },
+        issues: a.priority
+          ? [{
+              id: s.nextIssueId, type: "plan_change" as const, status: "open" as const,
+              raisedBy: a.by || "Planner · console", owner: "Shift Incharge", vehicleId: a.vehicleId,
+              detail: `⚡ PRIORITY — ${a.vehicleId} pinned to ${prev.target} (${prev.purpose.replace("_", " ")})${a.customer ? ` for ${a.customer}` : ""}${a.reason ? ` · ${a.reason}` : ""}`,
+              openedAt: s.now, slaMin: 0,
+            }, ...s.issues]
+          : s.issues,
+        nextIssueId: a.priority ? s.nextIssueId + 1 : s.nextIssueId,
+        toast: a.priority ? `⚡ ${a.vehicleId} marked URGENT` : `${a.vehicleId} priority cleared`,
+      };
+    }
+
     case "clearAssignment": {
       const assignments = { ...s.assignments };
       delete assignments[a.vehicleId];
@@ -630,21 +655,25 @@ function coreReducer(s: AppState, a: Action): AppState {
     }
 
     case "assignVehicle": {
-      const asg = a.assignment;
+      const prev = s.assignments[a.vehicleId];
+      // Mid-trip diversion: if this ITV was already on a DIFFERENT job, remember where
+      // it was pulled off, so the board shows the job change rather than hiding it.
+      const divertedFrom = a.assignment.divertedFrom ?? (prev && prev.target !== a.assignment.target ? `${prev.target} (${prev.purpose.replace("_", " ")})` : undefined);
+      const asg: Assignment = { ...a.assignment, at: a.assignment.at ?? s.now, divertedFrom: a.assignment.priority ? divertedFrom : a.assignment.divertedFrom };
       const isMe = a.vehicleId === meVehId(s);
       return {
         ...s,
         assignments: { ...s.assignments, [a.vehicleId]: asg },
-        // assignment changes are auditable plan changes
+        // assignment changes are auditable plan changes; priority ones stay OPEN so they surface
         issues: [
           {
             id: s.nextIssueId,
             type: "plan_change" as const,
-            status: "resolved" as const,
-            raisedBy: "Planner · console",
+            status: (asg.priority ? "open" : "resolved") as "open" | "resolved",
+            raisedBy: asg.by || "Planner · console",
             owner: "Shift Incharge",
             vehicleId: a.vehicleId,
-            detail: `${a.vehicleId} assigned → ${asg.pickup ? `${asg.pickup} → ` : ""}${asg.target} (${asg.purpose.replace("_", " ")}) · logged vs plan`,
+            detail: `${asg.priority ? "⚡ PRIORITY — " : ""}${a.vehicleId} assigned → ${asg.pickup ? `${asg.pickup} → ` : ""}${asg.target} (${asg.purpose.replace("_", " ")})${asg.customer ? ` for ${asg.customer}` : ""}${divertedFrom && asg.priority ? ` · diverted from ${divertedFrom}` : ""} · logged vs plan`,
             openedAt: s.now,
             slaMin: 0,
           },
@@ -654,7 +683,7 @@ function coreReducer(s: AppState, a: Action): AppState {
         // if the demo driver is idle, refresh his next offer to reflect the new assignment
         offer: isMe ? null : s.offer,
         nextOfferIn: isMe && !myActiveTrip(s) ? 3 : s.nextOfferIn,
-        toast: `${a.vehicleId} → ${asg.pickup ? asg.pickup + " → " : ""}${asg.target} assigned${isMe ? " — driver's next offer updated" : ""}`,
+        toast: `${asg.priority ? "⚡ " : ""}${a.vehicleId} → ${asg.pickup ? asg.pickup + " → " : ""}${asg.target} assigned${isMe ? " — driver's next offer updated" : ""}`,
       };
     }
 

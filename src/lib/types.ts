@@ -161,6 +161,15 @@ export interface Assignment {
   // once CONFIRMED, the planner has committed and auto-plan will not touch it.
   commit?: "tentative" | "confirmed";
   note?: string;
+  // PRIORITY OVERRIDE — a manual, urgent diversion. When something changes mid-shift
+  // (an important customer needs a box now, an urgent check-package), the planner pins
+  // an ITV to a duty regardless of the round-trip plan. Priority is always CONFIRMED
+  // (auto-plan never touches it) and is pinned to the top of the fleet, in red.
+  priority?: boolean;
+  customer?: string;      // important customer this urgent job is for
+  divertedFrom?: string;  // if the ITV was pulled off another job mid-trip, the old target
+  by?: string;            // who ordered it
+  at?: number;            // when — for the audit trail
 }
 
 export interface Vehicle {
