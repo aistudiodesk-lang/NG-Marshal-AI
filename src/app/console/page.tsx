@@ -12,6 +12,7 @@ import ItvPlannerTab from "./ItvPlannerTab";
 import DriverLogTab from "./DriverLogTab";
 import DriversTab from "./DriversTab";
 import SlaTab from "./SlaTab";
+import DashboardSla from "./DashboardSla";
 import { EQUIPMENT_TYPE_LABEL, EquipmentType, Issue, MOVEMENT_LABEL, MovementType, VehicleStatus, DUTY_LABEL, DutyPriority, isLive, SlaClass, SlaConfig, SlaPriority, SLA_CLASS_ORDER, SLA_CLASS_LABEL, SLA_PRIORITY_LABEL } from "@/lib/types";
 import { Wordmark } from "@/components/Brand";
 
@@ -94,6 +95,13 @@ export default function ConsolePage() {
     else if (t === "summary") setTab("pendency");
     else if (t === "masters" || t === "equipment" || t === "incentives") setTab("setup");
     else if (t === "dispatch" || t === "planner") setTab("itv");
+  }, []);
+
+  // let the dashboard SLA card jump to the full SLA board
+  useEffect(() => {
+    const go = () => setTab("sla");
+    window.addEventListener("ngm-open-sla", go);
+    return () => window.removeEventListener("ngm-open-sla", go);
   }, []);
 
   const site = state.sites.find((x) => x.id === state.activeSiteId) ?? SITE;
@@ -494,6 +502,7 @@ Completed this shift:${liveTeu}
           <ImportModal fileName={importPreview.fileName} sheets={importPreview.sheets} defaultFormatId={importPreview.defaultFormatId} onClose={() => setImportPreview(null)} />
         )}
         {tab === "pendency" && <PendencySummaryTab site={site} />}
+        {tab === "dashboard" && <DashboardSla />}
         {tab === "dashboard" && <AnalyticsPanel />}
         {tab === "yard" && <YardTab />}
         {tab === "itv" && <ItvPlannerTab site={site} allocateBar={<QuickAllocateBar />} proposal={state.proposal ? <ProposalPanel /> : null} />}
