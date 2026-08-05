@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useMemo, useState } from "react";
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import { useApp, SITE, SHIFT } from "@/lib/store";
 import { getIdentity } from "@/lib/identity";
 import { fmtClock, fmtInr, isValidContainerNo } from "@/lib/incentive";
@@ -79,7 +79,24 @@ export default function DriverPage() {
   }, []);
 
   const me = state.drivers.find((d) => d.id === state.meDriverId) ?? state.drivers[0];
-  const myVeh = state.vehicles.find((v) => v.driverId === state.meDriverId);
+  const mappedVeh = state.vehicles.find((v) => v.driverId === state.meDriverId);
+
+  // ── ITV confirm on login ──────────────────────────────────────────────────────
+  // His allocated ITV (from the master mapping) shows by default; he just says yes —
+  // or types the ITV he's actually on today. The chosen call sign drives his jobs,
+  // "where to go" and the job alerts. Kept for the shift (localStorage).
+  const [itvOverride, setItvOverride] = useState<string | null>(null);
+  useEffect(() => {
+    try { const v = localStorage.getItem("ngm-itv-override"); if (v) setItvOverride(v.toUpperCase()); } catch { /* ignore */ }
+  }, []);
+  const setItv = (raw: string) => {
+    const id = raw.trim().toUpperCase();
+    setItvOverride(id || null);
+    try { id ? localStorage.setItem("ngm-itv-override", id) : localStorage.removeItem("ngm-itv-override"); } catch { /* ignore */ }
+  };
+  const activeItvId = itvOverride ?? mappedVeh?.id;
+  const myVeh = state.vehicles.find((v) => v.id === activeItvId) ?? mappedVeh;
+
   const myTrips = state.trips.filter((t) => t.driverId === state.meDriverId);
   const done = myTrips.filter((t) => t.state === "completed");
   const active = myTrips.find((t) => !["completed", "aborted", "abandoned"].includes(t.state));
@@ -87,7 +104,92 @@ export default function DriverPage() {
   const milestone = teu >= mt ? rc.milestoneBonus : 0;
   const earned = myTrips.reduce((a, t) => a + (t.earnings?.total ?? 0), 0) + milestone;
   const lastFinished = [...myTrips].reverse().find((t) => ["completed", "aborted"].includes(t.state) && t.earnings);
-  const asg = myVeh ? state.assignments[myVeh.id] : undefined;
+  const asg = activeItvId ? state.assignments[activeItvId] : undefined;
+
+  // ── PUSH ALERT — fire when a NEW job is sent to this ITV ──────────────────────
+  // The planner "sends" a job by assigning this ITV (state.assignments[myVeh.id]).
+  // When that appears or changes, buzz the phone, pop a system notification, and show
+  // an in-app banner. Foreground/web works now; a fully-closed-app push needs FCM +
+  // the shared backend (see docs/CONNECT-APP-AND-WEB.md) to trigger the send.
+  const [notifPerm, setNotifPerm] = useState<"default" | "granted" | "denied" | "unsupported">("default");
+  const [jobAlert, setJobAlert] = useState<{ title: string; body: string; urgent: boolean } | null>(null);
+  const jobKey = asg ? `${asg.pickup ?? ""}>${asg.target}:${asg.purpose}${asg.priority ? "!" : ""}` : "";
+  const lastJobRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    setNotifPerm(typeof Notification === "undefined" ? "unsupported" : (Notification.permission as "default" | "granted" | "denied"));
+  }, []);
+
+  useEffect(() => {
+    // record the baseline on first run (hydration) without alerting
+    if (lastJobRef.current === null) { lastJobRef.current = jobKey; return; }
+    if (jobKey === lastJobRef.current) return;
+    lastJobRef.current = jobKey;
+    if (!jobKey) return; // job was cleared, not a new send
+    const urgent = !!asg?.priority;
+    const dest = `${asg?.pickup ? asg.pickup + " → " : ""}${asg?.target}`;
+    const title = urgent ? "⚡ तुरंत काम · URGENT" : "नया काम · New job";
+    const body = `${myVeh?.id ?? "ITV"} → ${dest} (${(asg?.purpose ?? "").replace("_", " ")})${urgent && asg?.customer ? ` · ${asg.customer}` : ""}`;
+    try { navigator.vibrate?.(urgent ? [200, 100, 200, 100, 300] : [180, 90, 180]); } catch { /* no vibration API */ }
+    if (typeof Notification !== "undefined" && Notification.permission === "granted") {
+      try { new Notification(title, { body, tag: "ng-marshal-job", requireInteraction: urgent }); } catch { /* WebView may block */ }
+    }
+    setJobAlert({ title, body, urgent });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [jobKey]);
+
+  // auto-dismiss the in-app banner
+  useEffect(() => {
+    if (!jobAlert) return;
+    const t = setTimeout(() => setJobAlert(null), jobAlert.urgent ? 15000 : 8000);
+    return () => clearTimeout(t);
+  }, [jobAlert]);
+
+  const enableAlerts = () => {
+    if (typeof Notification === "undefined") { setNotifPerm("unsupported"); return; }
+    Notification.requestPermission().then((p) => {
+      setNotifPerm(p as "default" | "granted" | "denied");
+      try { navigator.vibrate?.(60); } catch { /* ignore */ }
+    });
+  };
+
+  // ── PRESENCE watchdog ─────────────────────────────────────────────────────────
+  // He marks himself live (go on duty) / not live. While live, the app expects periodic
+  // signs of life (any tap resets the clock). After PROMPT_MS of silence it beeps +
+  // vibrates and asks "still there?"; if he still hasn't responded by OFFLINE_MS it
+  // marks him offline (goOffDuty) so the board reflects reality. Tunable below.
+  const PROMPT_MS = 20 * 60_000;   // ask after 20 min of no activity
+  const OFFLINE_MS = 25 * 60_000;  // auto-offline 5 min after that
+  const lastSeenRef = useRef<number>(0);
+  const promptRef = useRef<boolean>(false);
+  const [presencePrompt, setPresencePrompt] = useState(false);
+
+  const beep = () => {
+    try {
+      const AC = window.AudioContext ?? (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+      const ctx = new AC();
+      const o = ctx.createOscillator(); const g = ctx.createGain();
+      o.type = "square"; o.frequency.value = 880; g.gain.value = 0.15;
+      o.connect(g); g.connect(ctx.destination); o.start();
+      setTimeout(() => { o.stop(); ctx.close(); }, 500);
+    } catch { /* audio not available */ }
+  };
+
+  const iAmHere = () => { lastSeenRef.current = Date.now(); promptRef.current = false; setPresencePrompt(false); };
+
+  useEffect(() => {
+    if (!me.onDuty) { setPresencePrompt(false); promptRef.current = false; return; }
+    lastSeenRef.current = Date.now();
+    const mark = () => { lastSeenRef.current = Date.now(); if (promptRef.current) { promptRef.current = false; setPresencePrompt(false); } };
+    window.addEventListener("pointerdown", mark);
+    const id = setInterval(() => {
+      const idle = Date.now() - lastSeenRef.current;
+      if (idle >= OFFLINE_MS) { dispatch({ type: "goOffDuty" }); promptRef.current = false; setPresencePrompt(false); }
+      else if (idle >= PROMPT_MS && !promptRef.current) { promptRef.current = true; setPresencePrompt(true); beep(); try { navigator.vibrate?.([300, 150, 300, 150, 300]); } catch { /* ignore */ } }
+    }, 15_000);
+    return () => { window.removeEventListener("pointerdown", mark); clearInterval(id); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [me.onDuty]);
 
   // the ONE thing: where to go right now
   const destination = active
@@ -121,6 +223,36 @@ export default function DriverPage() {
           <span className="font-mono text-[12px] font-bold bg-[#1A2739] border border-[#2A3A50] text-[#FFC08A] px-2 py-0.5 rounded">{myVeh?.id ?? "—"}</span>
         </div>
 
+        {/* NEW-JOB ALERT — buzzes in when the planner sends this ITV a job */}
+        {jobAlert && (
+          <button
+            onClick={() => setJobAlert(null)}
+            className={`w-full text-left px-4 py-3 flex items-center gap-3 ${jobAlert.urgent ? "bg-[#C0392B] animate-pulse" : "bg-[#1E9E5A]"} text-white`}
+          >
+            <span className="text-[26px] leading-none">{jobAlert.urgent ? "⚡" : "🔔"}</span>
+            <span className="flex-1">
+              <span className="block text-[15px] font-extrabold leading-tight">{jobAlert.title}</span>
+              <span className="block text-[13px] font-semibold opacity-95">{jobAlert.body}</span>
+            </span>
+            <span className="text-[11px] font-bold opacity-80">✕</span>
+          </button>
+        )}
+
+        {/* one-tap permission so the phone can buzz + show system alerts */}
+        {notifPerm === "default" && (
+          <button onClick={enableAlerts} className="w-full bg-[#22334A] text-[#FFC08A] text-[13px] font-bold py-2.5 border-b border-[#2A3A50]">
+            🔔 काम के alert चालू करो · Enable job alerts
+          </button>
+        )}
+
+        {/* PRESENCE check — buzzes if he's gone quiet; no reply → auto-offline */}
+        {presencePrompt && (
+          <button onClick={iAmHere} className="w-full bg-[#E8641B] animate-pulse text-white px-4 py-3 text-center border-b border-[#2A3A50]">
+            <span className="block text-[16px] font-extrabold">क्या आप live हैं? · Still there?</span>
+            <span className="block text-[13px] font-semibold opacity-95 mt-0.5">जवाब नहीं दिया तो offline हो जाओगे — दबाओ ✔ हाँ live हूँ</span>
+          </button>
+        )}
+
         <div className="p-4 flex flex-col gap-3">
           {/* OFF DUTY — one card, one slide */}
           {!me.onDuty && (
@@ -129,12 +261,34 @@ export default function DriverPage() {
                 <p className="text-[12px] text-[#8FA0B5]">कल · Yesterday</p>
                 <p className="text-[34px] font-extrabold text-[#4CD584]">₹1,360</p>
               </div>
-              {myVeh ? (
-                <Slide label="ड्यूटी शुरू करो" sub={`ITV ${myVeh.id}`} color="green" onClick={() => dispatch({ type: "goOnDuty" })} />
+              {/* ITV — his allocated one by default; he confirms or picks another from the
+                  master list. Dropdown only — he can't type an ITV that isn't in the database. */}
+              <div className="bg-[#1A2739] border border-[#2A3A50] rounded-2xl p-4">
+                <p className="text-[12px] text-[#8FA0B5] mb-1">आपकी ITV · Your ITV</p>
+                <select
+                  value={activeItvId ?? ""}
+                  onChange={(e) => setItv(e.target.value)}
+                  className="w-full bg-[#101A28] border-2 border-[#2A3A50] text-[#EAF0F8] font-mono font-bold text-[22px] rounded-xl px-3 py-3 text-center appearance-none"
+                >
+                  <option value="" disabled>ITV चुनो · choose</option>
+                  {state.vehicles.map((v) => (
+                    <option key={v.id} value={v.id}>{v.id}{v.vendor ? ` · ${v.vendor}` : ""}</option>
+                  ))}
+                </select>
+                <p className="text-[11px] text-[#8FA0B5] mt-1.5 text-center">
+                  {mappedVeh && activeItvId === mappedVeh.id
+                    ? "यही आपकी allocated ITV है — सही है तो नीचे शुरू करो"
+                    : mappedVeh
+                      ? <>allocated: <b className="text-[#FFC08A]">{mappedVeh.id}</b> · <button onClick={() => setItv(mappedVeh.id)} className="underline">वापस</button></>
+                      : "list में से अपनी ITV चुनो"}
+                </p>
+              </div>
+              {activeItvId ? (
+                <Slide label="हाँ · ड्यूटी शुरू करो" sub={`ITV ${activeItvId}`} color="green" onClick={() => dispatch({ type: "goOnDuty" })} />
               ) : (
-                <div className="bg-[#1A2739] border-2 border-[#D64545]/60 rounded-2xl p-5 text-center">
-                  <p className="text-[22px] font-extrabold text-[#FF9E9E]">ITV नहीं मिला</p>
-                  <p className="text-[14px] text-[#C6D2E2] mt-2">Supervisor से बोलें — master control में आपकी ITV mapping नहीं है</p>
+                <div className="bg-[#1A2739] border-2 border-[#D64545]/60 rounded-2xl p-4 text-center">
+                  <p className="text-[16px] font-extrabold text-[#FF9E9E]">पहले ITV चुनो</p>
+                  <p className="text-[13px] text-[#C6D2E2] mt-1">ऊपर list में से अपनी ITV select करो</p>
                 </div>
               )}
             </>
@@ -142,6 +296,16 @@ export default function DriverPage() {
 
           {me.onDuty && (
             <>
+              {/* LIVE status — he is marked live; he can mark himself not-live (off) */}
+              <div className="flex items-center justify-between bg-[#132133] border border-[#2A3A50] rounded-xl px-3 py-2">
+                <span className="flex items-center gap-2 text-[13px] font-bold text-[#4CD584]">
+                  <span className="w-2.5 h-2.5 rounded-full bg-[#4CD584] animate-pulse" /> LIVE · {activeItvId}
+                </span>
+                <button onClick={() => { if (confirm("ड्यूटी बंद करें? आप offline हो जाओगे।")) dispatch({ type: "goOffDuty" }); }} className="text-[12px] font-bold text-[#FF9E9E] border border-[#D64545]/50 rounded px-2.5 py-1">
+                  बंद · Off
+                </button>
+              </div>
+
               {/* MONEY — always, big */}
               <div className="text-center">
                 <p className="text-[46px] leading-tight font-extrabold text-[#4CD584] tabular-nums">{fmtInr(earned)}</p>
