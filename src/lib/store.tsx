@@ -1075,8 +1075,8 @@ function coreReducer(s: AppState, a: Action): AppState {
       return { ...s, sites: [...s.sites, a.site], activeSiteId: a.site.id, toast: `Site added: ${a.site.name}` };
     }
 
-    case "hydrate":
-      return {
+    case "hydrate": {
+      const merged: AppState = {
         ...s,
         ...a.state,
         sites: a.state.sites ?? s.sites,
@@ -1091,6 +1091,32 @@ function coreReducer(s: AppState, a: Action): AppState {
         equipmentLogs: a.state.equipmentLogs ?? s.equipmentLogs ?? [],
         toast: a.notice ?? (a.quiet ? s.toast : "Session restored ✓"),
       };
+      // This device is the source of truth for ITS OWN driver. A background sync from the
+      // console must NOT reset the driver's timer or kick them off duty. So when the local
+      // driver is on duty, keep their duty flag, their in-flight trip and their claimed ITV
+      // exactly as this phone has them — take everything else (assignments, pool, masters)
+      // from the incoming snapshot. On the console this is a no-op: it is never on duty.
+      const meLocal = s.drivers.find((d) => d.id === s.meDriverId);
+      if (meLocal?.onDuty) {
+        merged.drivers = merged.drivers.map((d) => (d.id === s.meDriverId ? { ...d, onDuty: true } : d));
+        const localActive = s.trips.find(
+          (t) => t.driverId === s.meDriverId && !["completed", "aborted", "abandoned"].includes(t.state)
+        );
+        if (localActive) {
+          merged.trips = [...merged.trips.filter((t) => t.id !== localActive.id), localActive];
+        }
+        const mv = meVehId(s);
+        const localVeh = mv ? s.vehicles.find((v) => v.id === mv) : undefined;
+        if (mv && localVeh) {
+          merged.vehicles = merged.vehicles.map((v) =>
+            v.id === mv
+              ? { ...v, driverId: s.meDriverId, status: localVeh.status, statusNote: localVeh.statusNote, zone: localVeh.zone, statusSince: localVeh.statusSince, live: { ...(v.live ?? {}), ...(localVeh.live ?? {}) } }
+              : v
+          );
+        }
+      }
+      return merged;
+    }
 
     case "resetDemo":
       return { ...initial, toast: "Demo reset" };
@@ -1248,7 +1274,11 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         if (snap) {
           revRef.current = snap.rev;
           lastPushedRef.current = JSON.stringify(snap.state);
-          dispatch({ type: "hydrate", state: snap.state as Partial<AppState>, quiet: true, notice: "⚠ Someone else updated first — your last change was replaced. Redo it." });
+          // An on-duty driver's own duty/trip is preserved by hydrate and re-pushed on the
+          // next tick, so nothing is actually lost — don't alarm them. The console (where a
+          // real edit could be dropped) still gets the warning.
+          const meDriving = !!stateRef.current.drivers.find((d) => d.id === stateRef.current.meDriverId)?.onDuty;
+          dispatch({ type: "hydrate", state: snap.state as Partial<AppState>, quiet: true, notice: meDriving ? undefined : "⚠ Someone else updated first — your last change was replaced. Redo it." });
         }
       }
     }, 1500);
@@ -1266,9 +1296,10 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         if (snap) {
           // if a local edit is still pending it will be overwritten by the remote pull — warn
           const hadUnsaved = stateRef.current.pv !== lastPvRef.current;
+          const meDriving = !!stateRef.current.drivers.find((d) => d.id === stateRef.current.meDriverId)?.onDuty;
           revRef.current = snap.rev;
           lastPushedRef.current = JSON.stringify(snap.state);
-          dispatch({ type: "hydrate", state: snap.state as Partial<AppState>, quiet: true, notice: hadUnsaved ? "⚠ Updated from another device — your unsaved change may be lost. Check and redo." : undefined });
+          dispatch({ type: "hydrate", state: snap.state as Partial<AppState>, quiet: true, notice: hadUnsaved && !meDriving ? "⚠ Updated from another device — your unsaved change may be lost. Check and redo." : undefined });
         }
       }
     }, 4000);
