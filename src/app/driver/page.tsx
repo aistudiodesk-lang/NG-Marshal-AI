@@ -108,6 +108,7 @@ export default function DriverPage() {
   const [showProblem, setShowProblem] = useState(false);
   const [showDetails, setShowDetails] = useState(false);
   const [showTicket, setShowTicket] = useState(false);
+  const [ticketMode, setTicketMode] = useState<"start" | "finish">("start");
   const [photoTaken, setPhotoTaken] = useState(false);
   const [typedNo, setTypedNo] = useState("");
   const [typedSize, setTypedSize] = useState<"20" | "40">("40");
@@ -247,16 +248,12 @@ export default function DriverPage() {
 
   // the ONE thing: where to go right now
   const destination = active
-    ? active.movement === "export"
-      ? active.state === "enroute_terminal" && active.pickup ? active.pickup : active.terminal
-      : ["gate_out", "at_yard"].includes(active.state) ? "EXIM YARD" : active.terminal
-    : state.offer
-      ? state.offer.movement === "export" ? `${state.offer.pickup ?? "EXIM"} → ${state.offer.terminal}` : state.offer.terminal
-      : asg ? `${asg.pickup ? asg.pickup + " → " : ""}${asg.target}` : null;
+    ? `${active.pickup ? active.pickup + " → " : ""}${active.terminal}`
+    : asg ? `${asg.pickup ? asg.pickup + " → " : ""}${asg.target}` : null;
 
-  const statusWord = active
-    ? ({ enroute_terminal: "जाओ · GO", at_gate: "लाइन में · QUEUE", ticket_captured: "लोडिंग · LOADING", gate_out: "वापस · RETURN", at_yard: "खाली करो · OFFLOAD" } as Record<string, string>)[active.state]
-    : null;
+  // Live "running for X" from the wall clock when the first parchi was captured — survives
+  // the app being closed (startedAt is persisted with the trip). Re-renders on the duty tick.
+  const tripElapsed = active?.startedAt ? Math.max(0, Math.floor((Date.now() - active.startedAt) / 1000)) : 0;
 
   return (
     <main className="min-h-screen bg-[#31405A] py-5 px-4 flex flex-col items-center gap-3">
@@ -380,52 +377,34 @@ export default function DriverPage() {
 
               {/* WHERE TO GO — the dominant card */}
               <div className="bg-[#1A2739] border border-[#2A3A50] rounded-2xl p-4 text-center">
-                {state.offer && !active ? (
+                {active ? (
                   <>
-                    <div className="flex items-center justify-center gap-3">
-                      <p className="text-[30px] font-extrabold leading-tight">{destination}</p>
-                      <div className="w-[52px] h-[52px] rounded-full grid place-items-center flex-none" style={{ background: `conic-gradient(#E8641B ${(state.offer.expiresIn / 60) * 360}deg, #22334A 0)` }}>
-                        <span className="w-[40px] h-[40px] rounded-full bg-[#1A2739] grid place-items-center font-mono font-bold text-[12px] text-[#FFB07A]">{state.offer.expiresIn}</span>
-                      </div>
-                    </div>
-                    <p className="text-[20px] font-extrabold text-[#4CD584] mt-1">
-                      ≈ {fmtInr(rc.perTeu[state.offer.movement] * state.offer.expectedTeu + state.offer.boost)}
-                      {state.offer.boost > 0 && <span className="text-[12px] text-[#FFB07A] font-bold"> ⚡+₹{state.offer.boost}</span>}
-                    </p>
-                  </>
-                ) : active ? (
-                  <>
-                    <p className="text-[12px] font-bold text-[#8FA0B5]">{statusWord} · {fmtClock(state.now - active.stateSince)}</p>
+                    <p className="text-[12px] font-bold text-[#4CD584]">चालू · IN TRIP · {fmtClock(tripElapsed)}</p>
                     <p className="text-[34px] font-extrabold leading-tight mt-0.5">{destination}</p>
-                    {active.state === "at_gate" && <p className="text-[12px] font-mono text-[#F5B94B] mt-1">लाइन {fmtClock(active.gateWaitSec)} · auto-logged ✓</p>}
-                    {active.state === "ticket_captured" && <p className="text-[13px] font-mono text-[#5CD79A] mt-1">{active.containerNo} ✓ · {fmtInr(rc.perTeu[active.movement] * active.teu + active.boost)}</p>}
+                    <p className="text-[12px] text-[#FFB07A] mt-1">पहुँच कर दूसरी पर्ची लो · finish with 2nd parchi</p>
+                    {active.containerNo && <p className="text-[13px] font-mono text-[#5CD79A] mt-1">{active.containerNo} · पहली पर्ची ✓</p>}
+                  </>
+                ) : asg ? (
+                  <>
+                    <p className="text-[12px] font-bold text-[#8FA0B5]">जाओ · GO</p>
+                    <p className="text-[34px] font-extrabold leading-tight mt-0.5">{destination}</p>
+                    <p className="text-[12px] text-[#FFB07A] mt-1">पहुँच कर पहली पर्ची लो · start with 1st parchi</p>
                   </>
                 ) : (
-                  <>
-                    <p className="text-[26px] font-extrabold text-[#8FA0B5]">इंतज़ार करो</p>
-                    {asg && <p className="text-[13px] font-mono text-[#FFB07A] mt-1">अगला: {destination}</p>}
-                  </>
+                  <p className="text-[26px] font-extrabold text-[#8FA0B5]">इंतज़ार करो · कोई काम नहीं</p>
                 )}
               </div>
 
-              {/* ONE action */}
-              {state.offer && !active && (
-                <>
-                  <Slide label="स्वीकार करो" color="orange" onClick={() => dispatch({ type: "acceptOffer" })} />
-                  <button
-                    disabled={state.passesThisShift >= 3}
-                    onClick={() => dispatch({ type: "passOffer", reason: "driver pass" })}
-                    className="w-full text-[12px] font-semibold text-[#8FA0B5] py-1 disabled:opacity-40"
-                  >
-                    {state.passesThisShift >= 3 ? "Pass limit पूरा (3/3) — यह काम लेना होगा" : `नहीं जाना · Pass (${state.passesThisShift}/3)`}
-                  </button>
-                </>
-              )}
-              {active?.state === "at_gate" && (
-                <button onClick={() => { setShowTicket(true); setPhotoTaken(false); setTypedNo(""); }} className="w-full bg-[#E8641B] rounded-2xl py-5 text-white font-extrabold text-[19px] active:scale-[0.98]">
-                  📷 पर्ची की फोटो लो
+              {/* ONE action — the two parchis drive the whole trip */}
+              {active ? (
+                <button onClick={() => { setTicketMode("finish"); setShowTicket(true); setPhotoTaken(false); setTypedNo(""); }} className="w-full bg-[#1E9E5A] rounded-2xl py-5 text-white font-extrabold text-[19px] active:scale-[0.98]">
+                  📷 दूसरी पर्ची लो · पूरा करो
                 </button>
-              )}
+              ) : asg ? (
+                <button onClick={() => { setTicketMode("start"); setShowTicket(true); setPhotoTaken(false); setTypedNo(""); }} className="w-full bg-[#E8641B] rounded-2xl py-5 text-white font-extrabold text-[19px] active:scale-[0.98]">
+                  📷 पहली पर्ची लो · शुरू करो
+                </button>
+              ) : null}
 
               {/* PROBLEM — always one button */}
               <button onClick={() => setShowProblem(true)} className="w-full border-2 border-[#D64545]/60 text-[#FF9E9E] rounded-2xl py-3 text-[15px] font-bold">
@@ -465,7 +444,9 @@ export default function DriverPage() {
       {showTicket && (
         <div className="fixed inset-0 z-40 bg-black/60 flex items-end justify-center" onClick={() => setShowTicket(false)}>
           <div className="bg-[#101A28] border-t-2 border-[#2A3A50] rounded-t-3xl w-full max-w-[390px] p-5 pb-8 flex flex-col gap-3" onClick={(e) => e.stopPropagation()}>
-            <p className="text-center text-[14px] font-bold text-white">पर्ची · Terminal ticket</p>
+            <p className="text-center text-[14px] font-bold text-white">
+              {ticketMode === "start" ? "पहली पर्ची · Start trip (origin)" : "दूसरी पर्ची · Finish trip (destination)"}
+            </p>
             <label className={`w-full rounded-2xl py-4 text-center font-extrabold text-[17px] cursor-pointer ${photoTaken ? "bg-[#1E9E5A] text-white" : "bg-[#E8641B] text-white"}`}>
               {photoTaken ? "✓ फोटो ली गई" : "📷 फोटो लो"}
               <input
@@ -497,20 +478,17 @@ export default function DriverPage() {
             <button
               onClick={() => {
                 const valid = isValidContainerNo(typedNo);
-                dispatch({
-                  type: "snapTicket",
-                  containerNo: valid ? typedNo.toUpperCase().replace(/[^A-Z0-9]/g, "") : undefined,
-                  iso: valid ? (typedSize === "40" ? "4510" : "2210") : undefined,
-                  hasPhoto: photoTaken,
-                });
+                const containerNo = valid ? typedNo.toUpperCase().replace(/[^A-Z0-9]/g, "") : undefined;
+                const iso = valid ? (typedSize === "40" ? "4510" : "2210") : undefined;
+                dispatch({ type: ticketMode === "start" ? "startTrip" : "finishTrip", containerNo, iso, hasPhoto: photoTaken });
                 setShowTicket(false);
               }}
-              disabled={typedNo.length > 0 && !isValidContainerNo(typedNo)}
+              disabled={(typedNo.length > 0 && !isValidContainerNo(typedNo)) || (!photoTaken && typedNo.length === 0)}
               className="w-full bg-[#1E9E5A] disabled:opacity-40 rounded-2xl py-3.5 text-white font-extrabold text-[16px]"
             >
-              ठीक है ✓ {typedNo.length === 0 && "(OCR पढ़ेगा)"}
+              {ticketMode === "start" ? "ट्रिप शुरू करो ✓" : "ट्रिप पूरा करो ✓"}
             </button>
-            <p className="text-center text-[10.5px] text-[#8FA0B5]">फोटो से OCR खुद पढ़ लेगा · type only if photo not possible</p>
+            <p className="text-center text-[10.5px] text-[#8FA0B5]">फोटो लो — OCR खुद पढ़ लेगा · या नंबर टाइप करो</p>
           </div>
         </div>
       )}

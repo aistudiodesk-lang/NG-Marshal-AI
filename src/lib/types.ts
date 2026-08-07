@@ -39,6 +39,7 @@ export type TripState =
   | "ticket_captured"
   | "gate_out"
   | "at_yard"
+  | "started" // two-parchi flow: origin parchi captured, in transit to destination (server-tracked)
   | "completed"
   | "aborted" // gate rejected / wrong container
   | "abandoned";
@@ -376,6 +377,7 @@ export interface Trip {
   boostReason?: string;
   gateWaitSec: number;
   earnings?: TripEarnings;
+  startedAt?: number; // wall-clock ms when the first parchi was captured — survives app close, drives the live "running for X" timer
   timeline: { at: number; label: string }[];
 }
 

@@ -63,6 +63,8 @@ type Action =
   | { type: "acceptOffer" }
   | { type: "passOffer"; reason: string }
   | { type: "snapTicket"; containerNo?: string; iso?: string; hasPhoto?: boolean }
+  | { type: "startTrip"; containerNo?: string; iso?: string; hasPhoto?: boolean }
+  | { type: "finishTrip"; containerNo?: string; iso?: string; hasPhoto?: boolean }
   | { type: "markWaiting"; reason: string }
   | { type: "abandonTrip"; reason: string }
   | { type: "gateRejected" }
@@ -347,31 +349,12 @@ function reducer(s: AppState, a: Action): AppState {
 
 function coreReducer(s: AppState, a: Action): AppState {
   switch (a.type) {
-    case "tick": {
-      let s2: AppState = { ...s, now: s.now + 1 };
-      // offer countdown
-      if (s2.offer) {
-        const left = s2.offer.expiresIn - 1;
-        if (left <= 0) {
-          s2 = { ...s2, offer: null, nextOfferIn: 15, passesThisShift: s2.passesThisShift + 1, toast: "Offer timed out — logged as pass" };
-        } else {
-          s2 = { ...s2, offer: { ...s2.offer, expiresIn: left } };
-        }
-      } else {
-        const me = s2.drivers.find((d) => d.id === s2.meDriverId);
-        const mv = meVehId(s2);
-        if (me?.onDuty && mv && !myActiveTrip(s2)) {
-          if (s2.nextOfferIn > 0) {
-            s2 = { ...s2, nextOfferIn: s2.nextOfferIn - 1 };
-            if (s2.nextOfferIn === 0) s2 = { ...s2, offer: makeOffer(s2.now, s2.assignments[mv]) };
-          }
-        }
-      }
-      s2 = advanceMyTrip(s2);
-      // NOTE: no backgroundSim here. The fleet/pendency only change from real events
-      // (uploads, marks, assignments, driver actions) — never on their own.
-      return s2;
-    }
+    case "tick":
+      // The clock only advances a display counter now — it never progresses a trip. Trip
+      // state changes ONLY on the driver's own parchi captures (startTrip/finishTrip), each
+      // of which is saved to the server. So a trip never auto-completes and, because it lives
+      // in the synced snapshot, it survives the app being closed and resumes on reopen.
+      return { ...s, now: s.now + 1 };
 
     case "setMe":
       if (s.meDriverId === a.driverId) return s;
@@ -440,6 +423,83 @@ function coreReducer(s: AppState, a: Action): AppState {
         vehicles,
         offer: null,
       };
+    }
+
+    // ── Two-parchi, server-tracked trip ──────────────────────────────────────────
+    // startTrip = the driver captured the FIRST (origin) parchi → the trip is now running,
+    // saved to the shared snapshot. finishTrip = the SECOND (destination) parchi → the trip
+    // completes and earnings are booked. No timer touches either — the trip only moves when
+    // the driver acts, and because it is persisted it survives the app being closed.
+    case "startTrip": {
+      const mv = meVehId(s);
+      if (!mv) return { ...s, toast: "पहले अपनी ITV चुनो" };
+      if (myActiveTrip(s)) return s; // already on a trip
+      const asg = s.assignments[mv];
+      const iso = a.iso ?? "4510"; // 40' default until OCR reads the parchi
+      const teu = teuFromIso(iso);
+      const trip: Trip = {
+        id: s.nextTripId,
+        vehicleId: mv,
+        driverId: s.meDriverId,
+        terminal: asg?.target ?? "—",
+        pickup: asg?.pickup,
+        movement: asg?.purpose ?? "import",
+        state: "started",
+        stateSince: s.now,
+        verification: "provisional",
+        containerNo: a.containerNo,
+        iso,
+        teu,
+        boost: 0,
+        gateWaitSec: 0,
+        startedAt: Date.now(),
+        timeline: [{ at: s.now, label: `पहली पर्ची ✓ trip started${a.containerNo ? ` · ${a.containerNo}` : ""}` }],
+      };
+      return {
+        ...s,
+        trips: [...s.trips, trip],
+        nextTripId: s.nextTripId + 1,
+        vehicles: setVehicle(s, mv, { status: "running", zone: "En route", statusNote: `→ ${trip.terminal} · loaded` }),
+        toast: "ट्रिप शुरू ✓ पहली पर्ची दर्ज",
+      };
+    }
+
+    case "finishTrip": {
+      const t = myActiveTrip(s);
+      if (!t) return s;
+      const iso = a.iso ?? t.iso ?? "4510";
+      const teu = teuFromIso(iso);
+      const earnings = tripEarnings(s.rateCard, t.movement, teu, t.boost, SHIFT.isNight);
+      const assignments = { ...s.assignments };
+      delete assignments[t.vehicleId]; // job done → ITV free for the next allocation
+      let s2: AppState = {
+        ...s,
+        assignments,
+        trips: s.trips.map((x) =>
+          x.id === t.id
+            ? {
+                ...x,
+                state: "completed",
+                stateSince: s.now,
+                verification: "verified" as Verification,
+                teu,
+                iso,
+                containerNo: a.containerNo ?? x.containerNo,
+                earnings,
+                timeline: [...x.timeline, { at: s.now, label: `दूसरी पर्ची ✓ trip complete · +₹${earnings.total}` }],
+              }
+            : x
+        ),
+        vehicles: setVehicle(s, t.vehicleId, { status: "running", zone: "EXIM yard", statusNote: "Free · awaiting job" }),
+        toast: `ट्रिप पूरा ✓ +₹${earnings.total}`,
+      };
+      const myTeu = s2.trips
+        .filter((x) => x.driverId === s2.meDriverId && x.state === "completed")
+        .reduce((acc, x) => acc + x.teu, 0);
+      if (!s2.milestoneHit && myTeu >= s2.milestoneTeu) {
+        s2 = { ...s2, milestoneHit: true, celebration: `${myTeu}`, toast: null };
+      }
+      return s2;
     }
 
     case "acceptOffer": {
