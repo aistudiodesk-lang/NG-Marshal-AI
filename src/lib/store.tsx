@@ -40,6 +40,7 @@ export interface AppState {
   equipmentLogs: EquipmentLog[]; // daily hours/moves entries, operator-wise
   nextLogId: number;
   meDriverId: string; // whose driver-view this device shows — set from device identity at onboarding, NEVER synced
+  meVehicleId?: string; // the ITV THIS driver claimed at login (dropdown pick) — per-device, NEVER synced. Overrides the master mapping.
   rateCard: RateCard; // editable settings — drives ALL incentive math
   milestoneTeu: number; // celebration threshold, editable
   slaConfig: SlaConfig; // TAT targets per SLA class — drives ALL breach/at-risk judgement
@@ -56,6 +57,7 @@ export interface AppState {
 type Action =
   | { type: "tick" }
   | { type: "setMe"; driverId: string }
+  | { type: "claimItv"; vehicleId?: string }
   | { type: "goOnDuty" }
   | { type: "goOffDuty" }
   | { type: "acceptOffer" }
@@ -181,7 +183,10 @@ function resolveLogDriver(s: AppState, log: Omit<DriverTripLog, "id" | "at" | "s
 }
 
 function meVehId(s: AppState): string | undefined {
-  // "whatever is given to them": the ITV mapped to this driver in master control
+  // The ITV the driver CLAIMED at login (their dropdown pick on this device) wins —
+  // that is "the ITV I am actually on today". Falls back to the master mapping if they
+  // haven't picked one. This is what makes go-on-duty / offers / trips follow the pick.
+  if (s.meVehicleId && s.vehicles.some((v) => v.id === s.meVehicleId)) return s.meVehicleId;
   return s.vehicles.find((v) => v.driverId === s.meDriverId)?.id;
 }
 
@@ -372,30 +377,70 @@ function coreReducer(s: AppState, a: Action): AppState {
       if (s.meDriverId === a.driverId) return s;
       return { ...s, meDriverId: a.driverId, offer: null, nextOfferIn: 0 };
 
+    case "claimItv":
+      // The driver picked (or changed) their ITV in the app. Record it per-device so
+      // every reducer path (go-on-duty, offers, trips) follows the pick. Not persisted.
+      if (s.meVehicleId === a.vehicleId) return s;
+      return { ...s, meVehicleId: a.vehicleId, offer: null, nextOfferIn: 0 };
+
     case "goOnDuty": {
       const mv = meVehId(s);
-      if (!mv) return { ...s, toast: "ITV नहीं मिला — supervisor से बोलें (mapping in master control)" };
-      const s2: AppState = {
+      if (!mv) return { ...s, toast: "पहले ऊपर से अपनी ITV चुनो · pick your ITV first" };
+      const prevLive = s.vehicles.find((v) => v.id === mv)?.live ?? {};
+      // Claim this ITV for the logged-in driver TODAY: mark it live (app source) AND map
+      // the driver onto it (moving them off any other ITV). This is what makes the ITV
+      // show up LIVE, under this driver's name, on the console fleet board — the moment
+      // they go on duty — and lets the planner assign it and reach them.
+      const vehicles = s.vehicles.map((v) => {
+        if (v.id === mv) {
+          return {
+            ...v,
+            driverId: s.meDriverId,
+            status: "running" as const,
+            zone: "EXIM yard",
+            statusNote: "On duty · awaiting job",
+            statusSince: v.status !== "running" ? s.now : v.statusSince,
+            live: { ...prevLive, app: { at: s.now } },
+          };
+        }
+        if (v.driverId === s.meDriverId) return { ...v, driverId: undefined }; // driver moved to mv
+        return v;
+      });
+      return {
         ...s,
         drivers: s.drivers.map((d) => (d.id === s.meDriverId ? { ...d, onDuty: true } : d)),
-        // driver app on-duty is the SECOND live source — reconciles with any manual mark
-        vehicles: setVehicle(s, mv, {
-          status: "running", zone: "EXIM yard", statusNote: "On duty · awaiting job",
-          live: { ...(s.vehicles.find((v) => v.id === mv)?.live ?? {}), app: { at: s.now } },
-        }),
+        vehicles,
         nextOfferIn: 4,
-        toast: `On duty · ITV ${mv} claimed ✓`,
+        toast: `ड्यूटी शुरू · ITV ${mv} live ✓`,
       };
-      return s2;
     }
 
-    case "goOffDuty":
+    case "goOffDuty": {
+      const mv = meVehId(s);
+      // End of shift: drop the app-live mark (a supervisor's manual mark, if any, stays)
+      // and take the ITV offline — so the board reflects that the driver has logged out.
+      const vehicles = mv
+        ? s.vehicles.map((v) => {
+            if (v.id !== mv) return v;
+            const live = v.live ? { ...v.live } : undefined;
+            if (live) delete live.app;
+            return {
+              ...v,
+              status: "offline" as const,
+              statusNote: "Shift ended",
+              zone: "Parking",
+              statusSince: s.now,
+              live: live && live.manual ? live : undefined,
+            };
+          })
+        : s.vehicles;
       return {
         ...s,
         drivers: s.drivers.map((d) => (d.id === s.meDriverId ? { ...d, onDuty: false } : d)),
-        vehicles: meVehId(s) ? setVehicle(s, meVehId(s)!, { status: "offline", statusNote: "Shift ended", zone: "Parking" }) : s.vehicles,
+        vehicles,
         offer: null,
       };
+    }
 
     case "acceptOffer": {
       if (!s.offer || !meVehId(s)) return s;

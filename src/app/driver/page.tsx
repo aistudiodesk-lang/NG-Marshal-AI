@@ -9,15 +9,62 @@ import { fmtClock, fmtInr, isValidContainerNo } from "@/lib/incentive";
 import { Trip } from "@/lib/types";
 import { Wordmark } from "@/components/Brand";
 
+// Slide-to-confirm. The knob drags right; past 80% it fires. A plain tap fires too
+// (fallback) so a frustrated user is never stuck. touch-none stops the page scrolling
+// while dragging.
+const KNOB_PX = 48;
 function Slide({ label, sub, color, onClick }: { label: string; sub?: string; color: "green" | "orange"; onClick: () => void }) {
   const bg = color === "green" ? "bg-[#1E9E5A]" : "bg-[#E8641B]";
   const fg = color === "green" ? "text-[#1E9E5A]" : "text-[#E8641B]";
+  const trackRef = useRef<HTMLDivElement>(null);
+  const startX = useRef(0);
+  const maxX = useRef(0);
+  const [x, setX] = useState(0);
+  const [dragging, setDragging] = useState(false);
+
+  const begin = (clientX: number, target: HTMLElement, pointerId: number) => {
+    const track = trackRef.current;
+    if (!track) return;
+    maxX.current = Math.max(0, track.clientWidth - KNOB_PX - 12);
+    startX.current = clientX;
+    setDragging(true);
+    target.setPointerCapture?.(pointerId);
+  };
+  const move = (clientX: number) => {
+    if (!dragging) return;
+    setX(Math.max(0, Math.min(maxX.current, clientX - startX.current)));
+  };
+  const end = (clientX: number) => {
+    if (!dragging) return;
+    const dx = Math.max(0, Math.min(maxX.current, clientX - startX.current));
+    setDragging(false);
+    setX(0);
+    if (dx >= maxX.current * 0.8 || dx < 6) onClick(); // slid far enough, or a tap
+  };
+
   return (
-    <button onClick={onClick} className={`relative w-full ${bg} rounded-full py-4 pl-16 pr-4 text-white font-bold text-[17px] active:scale-[0.98] transition-transform`}>
-      <span className={`absolute left-1.5 top-1.5 bottom-1.5 w-12 bg-white rounded-full grid place-items-center text-xl font-extrabold ${fg}`}>→</span>
-      {label}
-      {sub && <span className="block text-[11px] font-medium opacity-85">{sub}</span>}
-    </button>
+    <div
+      ref={trackRef}
+      role="button"
+      tabIndex={0}
+      onPointerDown={(e) => begin(e.clientX, e.target as HTMLElement, e.pointerId)}
+      onPointerMove={(e) => move(e.clientX)}
+      onPointerUp={(e) => end(e.clientX)}
+      onPointerCancel={() => { setDragging(false); setX(0); }}
+      onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") onClick(); }}
+      className={`relative w-full ${bg} rounded-full py-4 select-none overflow-hidden touch-none active:scale-[0.99] transition-transform`}
+    >
+      <div className="text-center text-white font-bold text-[17px] px-14 pointer-events-none">
+        {label}
+        {sub && <span className="block text-[11px] font-medium opacity-85">{sub}</span>}
+      </div>
+      <span
+        style={{ transform: `translateX(${x}px)`, transition: dragging ? "none" : "transform .2s" }}
+        className={`absolute left-1.5 top-1.5 bottom-1.5 w-12 bg-white rounded-full grid place-items-center text-xl font-extrabold ${fg} pointer-events-none`}
+      >
+        →
+      </span>
+    </div>
   );
 }
 
@@ -96,6 +143,13 @@ export default function DriverPage() {
   };
   const activeItvId = itvOverride ?? mappedVeh?.id;
   const myVeh = state.vehicles.find((v) => v.id === activeItvId) ?? mappedVeh;
+
+  // Tell the shared store which ITV this driver is on, so go-on-duty, offers and trips
+  // all follow the pick — not just the master mapping. Runs whenever the pick changes.
+  useEffect(() => {
+    dispatch({ type: "claimItv", vehicleId: activeItvId ?? undefined });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeItvId]);
 
   const myTrips = state.trips.filter((t) => t.driverId === state.meDriverId);
   const done = myTrips.filter((t) => t.state === "completed");
@@ -257,12 +311,13 @@ export default function DriverPage() {
           {/* OFF DUTY — one card, one slide */}
           {!me.onDuty && (
             <>
-              {earned > 0 && (
-                <div className="text-center py-3">
-                  <p className="text-[12px] text-[#8FA0B5]">अब तक · Earned</p>
-                  <p className="text-[34px] font-extrabold text-[#4CD584]">{fmtInr(earned)}</p>
-                </div>
-              )}
+              <div className="text-center py-3">
+                <p className="text-[13px] text-[#8FA0B5]">नमस्ते · Welcome</p>
+                <p className="text-[26px] font-extrabold text-[#EAF0F8]">{me.nameHi}</p>
+                {earned > 0
+                  ? <p className="text-[15px] font-extrabold text-[#4CD584] mt-1">अब तक · Earned {fmtInr(earned)}</p>
+                  : me.streakDays ? <p className="text-[12px] text-[#8FA0B5] mt-0.5">🔥 {me.streakDays} दिन लगातार ड्यूटी</p> : null}
+              </div>
               {/* ITV — his allocated one by default; he confirms or picks another from the
                   master list. Dropdown only — he can't type an ITV that isn't in the database. */}
               <div className="bg-[#1A2739] border border-[#2A3A50] rounded-2xl p-4">
