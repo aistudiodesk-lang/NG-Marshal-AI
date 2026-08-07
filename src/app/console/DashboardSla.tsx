@@ -42,7 +42,7 @@ export default function DashboardSla() {
     <div className="bg-white border border-[#D8DEE7] rounded-xl p-4">
       <div className="flex items-center justify-between mb-2">
         <p className="text-[11px] tracking-[0.1em] uppercase text-[#5C6B80] font-bold">SLA · turnaround (TAT)</p>
-        <a href="#" onClick={(e) => { e.preventDefault(); window.dispatchEvent(new CustomEvent("ngm-open-sla")); }} className="text-[11px] font-bold text-[#1F3864]">full SLA board →</a>
+        <span className="text-[10px] text-[#96A2B4]">tap a TAT for its sub-TATs</span>
       </div>
 
       {totalN === 0 ? (
