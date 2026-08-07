@@ -39,10 +39,10 @@ export default function DashboardSla() {
   const totalN = rows.length;
 
   return (
-    <div className="bg-white border border-[#D8DEE7] rounded-xl p-4">
-      <div className="flex items-center justify-between mb-2">
+    <div className="bg-white border border-[#D8DEE7] rounded-xl p-4 mt-4">
+      <div className="flex items-center justify-between mb-3">
         <p className="text-[11px] tracking-[0.1em] uppercase text-[#5C6B80] font-bold">SLA · turnaround (TAT)</p>
-        <span className="text-[10px] text-[#96A2B4]">tap a TAT for its sub-TATs</span>
+        <span className="text-[10px] text-[#96A2B4]">tap a TAT for its sub-TATs · ▲ = over target</span>
       </div>
 
       {totalN === 0 ? (
@@ -69,7 +69,7 @@ export default function DashboardSla() {
                     <p className="text-[12px] text-[#96A2B4] mt-1 py-1">no cycles</p>
                   ) : (
                     <>
-                      <p className={`text-[24px] font-extrabold tabular-nums leading-tight mt-0.5 ${hit ? "text-[#177A47]" : "text-[#C0392B]"}`}>{s.avg}<span className="text-[9px] font-semibold text-[#5C6B80] ml-1">avg min</span></p>
+                      <p className={`text-[24px] font-extrabold tabular-nums leading-tight mt-0.5 ${hit ? "text-[#177A47]" : "text-[#C0392B]"}`}>{hit ? "" : "▲"}{s.avg}<span className="text-[9px] font-semibold text-[#5C6B80] ml-1">avg min</span></p>
                       <p className="text-[11px] font-bold"><span className={breachCls(s.breachPct)}>{s.breachPct}% breach</span> <span className="text-[#96A2B4] font-medium">· {s.n}</span></p>
                     </>
                   )}

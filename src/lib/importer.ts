@@ -100,7 +100,8 @@ export function reconcilePool(
     const prev = existing.get(no);
     if (prev) {
       updated++;
-      stillPending.push({ ...prev, ...row, status: "pending", firstSeenAt: prev.firstSeenAt ?? feedAt, lastSeenFile: source, lastSeenAt: feedAt });
+      // feeds can arrive out of order — keep the EARLIEST first-seen so TAT/dwell isn't understated
+      stillPending.push({ ...prev, ...row, status: "pending", firstSeenAt: Math.min(prev.firstSeenAt ?? feedAt, feedAt), lastSeenFile: source, lastSeenAt: feedAt });
     } else {
       added++;
       stillPending.push({ ...row, status: "pending", firstSeenFile: source, firstSeenAt: feedAt, lastSeenFile: source, lastSeenAt: feedAt });

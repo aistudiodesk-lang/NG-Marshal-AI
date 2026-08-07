@@ -12,15 +12,9 @@
   --font-mono: var(--font-geist-mono);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
-}
-
+/* Background + foreground are set on <body> in layout.tsx (bg-[#EDF0F4] text-[#16243A]),
+   which outranks a body element rule — so we only set the font here. Use the loaded
+   Geist Sans so sans copy matches the Geist Mono used for IDs/figures. */
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  font-family: var(--font-geist-sans), Arial, Helvetica, sans-serif;
 }

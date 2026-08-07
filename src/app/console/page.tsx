@@ -21,7 +21,7 @@ import { Wordmark } from "@/components/Brand";
 type Tab = "dashboard" | "pendency" | "yard" | "planning" | "itv" | "driverlog" | "drivers" | "setup";
 
 const TABS: { id: Tab; label: string; purpose: string }[] = [
-  { id: "dashboard", label: "Dashboard",   purpose: "THE WHOLE PICTURE — deployment, fleet status, trips, hot list, open issues and shift analytics, live." },
+  { id: "dashboard", label: "Dashboard",   purpose: "THE WHOLE PICTURE — deployment, fleet status, trips, SLA turnaround (TAT), hot list, open issues and shift analytics, live." },
   { id: "pendency",  label: "Pendency",    purpose: "THE REPORT — the EXIM PENDENCY REPORT in your Excel format, live. Read it, edit the manual cells, print it." },
   { id: "yard",      label: "Yard",        purpose: "SEE — block-wise map of where the containers actually are. Colour it by ageing, direction, flags or fill." },
   { id: "planning",  label: "Demand",      purpose: "SEE THE WORK — how much import & export is waiting at each destination, and the shift deployment summary. No ITV named here." },
@@ -194,7 +194,7 @@ Completed this shift:${liveTeu}
    */
   async function handleImportFiles(files: File[], defaultFormatId?: string) {
     if (files.length === 1) return handleImportFile(files[0], defaultFormatId);
-    const { parseFile, guessKind, extractContainers, parseFeedTimestamp, formatById } = await import("@/lib/importer");
+    const { parseFile, extractContainers, parseFeedTimestamp, formatById } = await import("@/lib/importer");
     const forced = formatById(defaultFormatId);
     const ordered = [...files].sort((a, b) => {
       const ta = parseFeedTimestamp(a.name), tb = parseFeedTimestamp(b.name);
@@ -208,18 +208,34 @@ Completed this shift:${liveTeu}
       const sheets = await parseFile(f);
       let any = false;
       for (const sh of sheets) {
-        // when the user explicitly chose Import or Export, honour it; else auto-detect
-        if (!forced && guessKind(sh) !== "container_pool") continue;
-        if (forced && forced.kind !== "container_pool") continue;
-        const list = extractContainers(sh, f.name, forced?.direction);
-        if (!list.length) continue;
-        dispatch({ type: "importContainers", list, source: f.name });
+        // when the user explicitly chose a format, honour it; else auto-detect. Route
+        // EVERY report kind to its extractor — not just container pools — so bulk-selecting
+        // transport reports / trip logs / masters actually imports (was silently dropped).
+        const fmt = forced ?? guessFormat(sh);
+        if (!fmt) continue;
+        if (fmt.kind === "container_pool") {
+          const list = extractContainers(sh, f.name, fmt.direction);
+          if (!list.length) continue;
+          dispatch({ type: "importContainers", list, source: f.name });
+        } else if (fmt.kind === "itv_master") {
+          const v = extractVehicles(sh); if (!v.length) continue;
+          dispatch({ type: "importVehicles", list: v });
+        } else if (fmt.kind === "driver_master") {
+          const d = extractDrivers(sh); if (!d.length) continue;
+          dispatch({ type: "importDrivers", list: d });
+        } else if (fmt.kind === "driver_triplog") {
+          const t = extractTripLogs(sh); if (!t.length) continue;
+          dispatch({ type: "importDriverLogs", list: t });
+        } else if (fmt.kind === "transport_report") {
+          const t = extractTransportMoves(sh); if (!t.length) continue;
+          dispatch({ type: "importDriverLogs", list: t });
+        } else continue;
         any = true;
       }
       any ? loaded++ : skipped++;
     }
     const what = forced ? `${forced.label} · ` : "";
-    setBulkResult(`${what}Replayed ${loaded} file${loaded === 1 ? "" : "s"} oldest-first${skipped ? ` · ${skipped} had no matching data` : ""}. Live pendency now matches the newest sheet.`);
+    setBulkResult(`${what}Loaded ${loaded} file${loaded === 1 ? "" : "s"} (oldest-first)${skipped ? ` · ${skipped} had no matching data` : ""}.`);
   }
 
   // shared import handler — parse only; the modal lets the user confirm the report type.
@@ -432,7 +448,7 @@ Completed this shift:${liveTeu}
               </table>
               <div className="mt-3 bg-[#F2F7F3] border border-[#CBE3D3] rounded-lg px-3.5 py-2.5 flex flex-wrap justify-between items-center gap-2 text-[12px]">
                 <span><b className="text-[#177A47]">Standby evidence pack ready</b> · CT3 gate · GPS-stamped</span>
-                <button className="text-[10.5px] font-bold text-[#1F3864] border border-[#D8DEE7] bg-[#F6F8FB] rounded px-2.5 py-1">Download ▸</button>
+                <button disabled title="Evidence-pack export comes with the driver app / GPS feed" className="text-[10.5px] font-bold text-[#96A2B4] border border-[#D8DEE7] bg-[#F6F8FB] rounded px-2.5 py-1 cursor-not-allowed">Download · soon</button>
               </div>
             </div>
 
@@ -561,7 +577,7 @@ Completed this shift:${liveTeu}
           <div className="bg-white border border-[#D8DEE7] rounded-xl p-4 mt-4 overflow-x-auto">
             <div className="flex flex-wrap justify-between items-center mb-3 gap-2">
               <p className="text-[11px] tracking-[0.1em] uppercase text-[#5C6B80] font-bold">
-                Incentive ledger · rate card {state.rateCard.version} (₹{state.rateCard.perTeu.import}/TEU · night ×{state.rateCard.nightMultiplier} · quest +₹{state.rateCard.milestoneBonus} @ {state.milestoneTeu} TEU)
+                Incentive ledger · live driver-app trips <span className="normal-case tracking-normal text-[#96A2B4]">(for the payout pipeline — the <b>Drivers</b> tab is the report from uploaded transport / trip logs)</span> · rate {state.rateCard.version} (₹{state.rateCard.perTeu.import}/TEU · night ×{state.rateCard.nightMultiplier} · quest +₹{state.rateCard.milestoneBonus} @ {state.milestoneTeu} TEU)
               </p>
               <span className="text-[11px] text-[#5C6B80]">Pipeline: provisional → verified → <b>approved</b> → paid (₹10k deposit retained)</span>
             </div>
@@ -611,6 +627,9 @@ Completed this shift:${liveTeu}
               Issues &amp; exceptions · open first · everything owned &amp; audited
             </p>
             <div className="flex flex-col gap-2">
+              {state.issues.length === 0 && (
+                <p className="text-[12.5px] text-[#5C6B80] py-6 text-center border border-dashed border-[#D8DEE7] rounded-lg">कोई issue नहीं · No open issues — all clear ✓</p>
+              )}
               {[...state.issues].sort((a, b) => (a.status === "resolved" ? 1 : 0) - (b.status === "resolved" ? 1 : 0)).map((i) => (
                 <div
                   key={i.id}
@@ -1166,6 +1185,9 @@ function SlaTargetsPanel() {
   const { state, dispatch } = useApp();
   const [draft, setDraft] = useState<SlaConfig>(state.slaConfig);
   const dirty = JSON.stringify(draft) !== JSON.stringify(state.slaConfig);
+  // adopt targets changed elsewhere (another device / reset) — but only when the user
+  // has no unsaved edit in progress, so we never clobber what they're typing.
+  useEffect(() => { if (!dirty) setDraft(state.slaConfig); }, [state.slaConfig]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const setField = (c: SlaClass, patch: Partial<SlaConfig[SlaClass]>) => setDraft((d) => ({ ...d, [c]: { ...d[c], ...patch } }));
 

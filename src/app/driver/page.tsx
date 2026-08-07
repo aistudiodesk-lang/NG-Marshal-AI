@@ -45,12 +45,12 @@ function Celebration({ teu, bonus, target, onClose }: { teu: string; bonus: numb
           {p.emoji}
         </span>
       ))}
-      <div className="popcard bg-[#101A28] border-2 border-[#F5B94B] rounded-3xl px-8 py-8 text-center mx-6 max-w-[330px]" style={{ animation: "pop .5s ease-out" }}>
+      <div className="popcard bg-[#101A28] border-2 border-[#F5B94B] rounded-3xl px-8 py-8 text-center mx-6 max-w-[330px]" style={{ animation: "pop .5s ease-out" }} onClick={(e) => e.stopPropagation()}>
         <p className="text-[64px] leading-none">🏆</p>
         <p className="text-[30px] font-extrabold text-white mt-2">{teu} TEU!</p>
         <p className="text-[17px] font-bold text-[#F5B94B] mt-1">बोनस +{fmtInr(bonus)} 🎉</p>
         <p className="text-[12px] text-[#8FA0B5] mt-2">{target}+ TEU इस शिफ्ट में — शाबाश!</p>
-        <button className="mt-4 bg-[#1E9E5A] text-white font-bold rounded-full px-8 py-2.5 text-[14px]">ठीक है 👍</button>
+        <button onClick={onClose} className="mt-4 bg-[#1E9E5A] text-white font-bold rounded-full px-8 py-2.5 text-[14px]">ठीक है 👍</button>
       </div>
     </div>
   );
@@ -257,24 +257,29 @@ export default function DriverPage() {
           {/* OFF DUTY — one card, one slide */}
           {!me.onDuty && (
             <>
-              <div className="text-center py-3">
-                <p className="text-[12px] text-[#8FA0B5]">कल · Yesterday</p>
-                <p className="text-[34px] font-extrabold text-[#4CD584]">₹1,360</p>
-              </div>
+              {earned > 0 && (
+                <div className="text-center py-3">
+                  <p className="text-[12px] text-[#8FA0B5]">अब तक · Earned</p>
+                  <p className="text-[34px] font-extrabold text-[#4CD584]">{fmtInr(earned)}</p>
+                </div>
+              )}
               {/* ITV — his allocated one by default; he confirms or picks another from the
                   master list. Dropdown only — he can't type an ITV that isn't in the database. */}
               <div className="bg-[#1A2739] border border-[#2A3A50] rounded-2xl p-4">
-                <p className="text-[12px] text-[#8FA0B5] mb-1">आपकी ITV · Your ITV</p>
-                <select
-                  value={activeItvId ?? ""}
-                  onChange={(e) => setItv(e.target.value)}
-                  className="w-full bg-[#101A28] border-2 border-[#2A3A50] text-[#EAF0F8] font-mono font-bold text-[22px] rounded-xl px-3 py-3 text-center appearance-none"
-                >
-                  <option value="" disabled>ITV चुनो · choose</option>
-                  {state.vehicles.map((v) => (
-                    <option key={v.id} value={v.id}>{v.id}{v.vendor ? ` · ${v.vendor}` : ""}</option>
-                  ))}
-                </select>
+                <p className="text-[12px] text-[#8FA0B5] mb-1">आपकी ITV · Your ITV <span className="text-[#5C6B80]">(बदलने के लिए दबाओ ▾)</span></p>
+                <div className="relative">
+                  <select
+                    value={activeItvId ?? ""}
+                    onChange={(e) => setItv(e.target.value)}
+                    className="w-full bg-[#101A28] border-2 border-[#2A3A50] text-[#EAF0F8] font-mono font-bold text-[22px] rounded-xl px-3 py-3 text-center appearance-none"
+                  >
+                    <option value="" disabled>ITV चुनो · choose</option>
+                    {state.vehicles.map((v) => (
+                      <option key={v.id} value={v.id}>{v.id}{v.vendor ? ` · ${v.vendor}` : ""}</option>
+                    ))}
+                  </select>
+                  <span className="absolute right-3 top-1/2 -translate-y-1/2 text-[#8FA0B5] text-[18px] pointer-events-none">▾</span>
+                </div>
                 <p className="text-[11px] text-[#8FA0B5] mt-1.5 text-center">
                   {mappedVeh && activeItvId === mappedVeh.id
                     ? "यही आपकी allocated ITV है — सही है तो नीचे शुरू करो"
@@ -352,8 +357,12 @@ export default function DriverPage() {
               {state.offer && !active && (
                 <>
                   <Slide label="स्वीकार करो" color="orange" onClick={() => dispatch({ type: "acceptOffer" })} />
-                  <button onClick={() => dispatch({ type: "passOffer", reason: "driver pass" })} className="w-full text-[12px] font-semibold text-[#8FA0B5] py-1">
-                    नहीं जाना · Pass ({state.passesThisShift}/3)
+                  <button
+                    disabled={state.passesThisShift >= 3}
+                    onClick={() => dispatch({ type: "passOffer", reason: "driver pass" })}
+                    className="w-full text-[12px] font-semibold text-[#8FA0B5] py-1 disabled:opacity-40"
+                  >
+                    {state.passesThisShift >= 3 ? "Pass limit पूरा (3/3) — यह काम लेना होगा" : `नहीं जाना · Pass (${state.passesThisShift}/3)`}
                   </button>
                 </>
               )}
@@ -389,7 +398,7 @@ export default function DriverPage() {
                     </div>
                   ))}
                   <p className="text-[10.5px] font-mono text-[#8FA0B5]">Rate ₹{rc.perTeu.import}/TEU · scanning ₹{rc.perTeu.scanning} · 🏆 {mt}+ TEU = +₹{rc.milestoneBonus}</p>
-                  <button onClick={() => dispatch({ type: "goOffDuty" })} className="text-[11px] text-[#8FA0B5] py-1">ड्यूटी खत्म · End shift</button>
+                  <button onClick={() => { if (confirm("ड्यूटी बंद करें? आप offline हो जाओगे।")) dispatch({ type: "goOffDuty" }); }} className="text-[11px] text-[#8FA0B5] py-1">ड्यूटी खत्म · End shift</button>
                 </div>
               )}
             </>

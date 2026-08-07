@@ -102,7 +102,7 @@ type Action =
   | { type: "addDriverLog"; log: Omit<DriverTripLog, "id" | "at" | "source">; source?: "manual" | "upload" }
   | { type: "deleteDriverLog"; id: number }
   | { type: "importDriverLogs"; list: Omit<DriverTripLog, "id" | "at" | "source">[] }
-  | { type: "hydrate"; state: Partial<AppState>; quiet?: boolean }
+  | { type: "hydrate"; state: Partial<AppState>; quiet?: boolean; notice?: string }
   | { type: "resetDemo" }
   | { type: "clearCelebration" }
   | { type: "clearToast" };
@@ -325,7 +325,18 @@ function backgroundSim(s: AppState): AppState {
 const NON_PERSISTING = new Set(["tick", "clearToast"]);
 function reducer(s: AppState, a: Action): AppState {
   const ns = coreReducer(s, a);
-  if (ns === s || NON_PERSISTING.has(a.type)) return ns;
+  if (ns === s) return ns;
+  // `tick` normally only advances the clock (not persisted), BUT it also drives trip
+  // progression: advanceMyTrip can COMPLETE a trip (earnings/verification), raise an
+  // auto issue, and bump passes/milestone — all persisted. If we never bumped pv on
+  // tick, that just-completed trip would live only in memory and be lost on the next
+  // backend poll (hydrate overwrites). So bump pv when tick actually changed saved data.
+  if (a.type === "tick") {
+    const changed = ns.trips !== s.trips || ns.issues !== s.issues || ns.nextIssueId !== s.nextIssueId ||
+      ns.passesThisShift !== s.passesThisShift || ns.milestoneHit !== s.milestoneHit || ns.vehicles !== s.vehicles;
+    return changed ? { ...ns, pv: (s.pv ?? 0) + 1 } : ns;
+  }
+  if (NON_PERSISTING.has(a.type)) return ns;
   return { ...ns, pv: (s.pv ?? 0) + 1 };
 }
 
@@ -415,6 +426,7 @@ function coreReducer(s: AppState, a: Action): AppState {
     }
 
     case "passOffer":
+      if (s.passesThisShift >= 3) return { ...s, toast: "Pass limit reached (3/3) — this job must be taken" };
       return {
         ...s,
         offer: null,
@@ -566,9 +578,10 @@ function coreReducer(s: AppState, a: Action): AppState {
 
     case "resetShiftLive": {
       // start of a new shift — clear every live mark (both sources) so the roster
-      // is rebuilt from scratch. Assignments and status are left alone.
+      // is rebuilt from scratch. Assignments and status are left alone. Also reset the
+      // per-shift counters so the milestone bonus and pass count don't carry over.
       const vehicles = s.vehicles.map((v) => (v.live ? { ...v, live: undefined } : v));
-      return { ...s, vehicles, toast: "New shift — all live marks cleared" };
+      return { ...s, vehicles, milestoneHit: false, passesThisShift: 0, toast: "New shift — roster & shift counters cleared" };
     }
 
     case "setVehicleStatus": {
@@ -900,7 +913,8 @@ function coreReducer(s: AppState, a: Action): AppState {
     case "importDriverLogs": {
       let id = s.nextDriverLogId;
       const rows: DriverTripLog[] = a.list.map((r) => ({ ...resolveLogDriver(s, r), id: id++, at: s.now, source: "upload" as const }));
-      return { ...s, driverLogs: [...rows, ...s.driverLogs], nextDriverLogId: id, toast: `Loaded ${rows.length} trip row${rows.length === 1 ? "" : "s"}` };
+      // a transport report can add thousands of rows — cap driverLogs so storage stays bounded
+      return applyRetention({ ...s, driverLogs: [...rows, ...s.driverLogs], nextDriverLogId: id, toast: `Loaded ${rows.length} trip row${rows.length === 1 ? "" : "s"}` });
     }
 
     case "quickAllocate": {
@@ -1030,7 +1044,7 @@ function coreReducer(s: AppState, a: Action): AppState {
         equipment: a.state.equipment ?? s.equipment ?? [],
         operators: a.state.operators ?? s.operators ?? [],
         equipmentLogs: a.state.equipmentLogs ?? s.equipmentLogs ?? [],
-        toast: a.quiet ? s.toast : "Session restored ✓",
+        toast: a.notice ?? (a.quiet ? s.toast : "Session restored ✓"),
       };
 
     case "resetDemo":
@@ -1103,17 +1117,21 @@ export const RETENTION = {
   history: 40000,       // ~6 months of containers at 200/day — TAT & volume analytics
   feeds: 1500,          // ~6 months at 8 uploads/day — the pendency trend line
   trips: 20000,         // per-ITV and per-driver productivity
+  driverLogs: 60000,    // per-ITV-day rows carrying SLA/TAT cycles (a transport report = thousands)
   issues: 3000,
   equipmentLogs: 8000,
 } as const;
 
-/** Trim every unbounded list to its cap. Applied on every write that can grow. */
+/** Trim every unbounded list to its cap. Applied on every write that can grow.
+ *  history/feeds/issues/equipmentLogs/driverLogs are PREPENDED newest-first → slice(0,N)
+ *  keeps the newest. trips are APPENDED newest-last → slice(-N) keeps the newest. */
 function applyRetention(s: AppState): AppState {
   return {
     ...s,
     history: s.history.length > RETENTION.history ? s.history.slice(0, RETENTION.history) : s.history,
     feeds: s.feeds.length > RETENTION.feeds ? s.feeds.slice(0, RETENTION.feeds) : s.feeds,
-    trips: s.trips.length > RETENTION.trips ? s.trips.slice(0, RETENTION.trips) : s.trips,
+    trips: s.trips.length > RETENTION.trips ? s.trips.slice(-RETENTION.trips) : s.trips,
+    driverLogs: s.driverLogs.length > RETENTION.driverLogs ? s.driverLogs.slice(0, RETENTION.driverLogs) : s.driverLogs,
     issues: s.issues.length > RETENTION.issues ? s.issues.slice(0, RETENTION.issues) : s.issues,
     equipmentLogs: s.equipmentLogs.length > RETENTION.equipmentLogs ? s.equipmentLogs.slice(0, RETENTION.equipmentLogs) : s.equipmentLogs,
   };
@@ -1178,12 +1196,14 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         revRef.current = res.rev;
         lastPushedRef.current = payload;
       } else {
-        // rev conflict: someone else wrote first → pull theirs (remote wins), our next edit re-pushes
+        // rev conflict: someone else wrote first → pull theirs (remote wins). We were
+        // in this branch because a local edit was pending, so that edit is being replaced
+        // — surface it rather than dropping it silently.
         const snap = await ds.load(SITE.id);
         if (snap) {
           revRef.current = snap.rev;
           lastPushedRef.current = JSON.stringify(snap.state);
-          dispatch({ type: "hydrate", state: snap.state as Partial<AppState>, quiet: true });
+          dispatch({ type: "hydrate", state: snap.state as Partial<AppState>, quiet: true, notice: "⚠ Someone else updated first — your last change was replaced. Redo it." });
         }
       }
     }, 1500);
@@ -1199,9 +1219,11 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       if (rev !== null && rev > revRef.current) {
         const snap = await ds.load(SITE.id);
         if (snap) {
+          // if a local edit is still pending it will be overwritten by the remote pull — warn
+          const hadUnsaved = stateRef.current.pv !== lastPvRef.current;
           revRef.current = snap.rev;
           lastPushedRef.current = JSON.stringify(snap.state);
-          dispatch({ type: "hydrate", state: snap.state as Partial<AppState>, quiet: true });
+          dispatch({ type: "hydrate", state: snap.state as Partial<AppState>, quiet: true, notice: hadUnsaved ? "⚠ Updated from another device — your unsaved change may be lost. Check and redo." : undefined });
         }
       }
     }, 4000);

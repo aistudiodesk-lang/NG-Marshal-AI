@@ -68,7 +68,7 @@ export default function SlaBoard() {
   if (tot.n === 0) return null;
 
   return (
-    <div className="bg-white border border-[#D8DEE7] rounded-xl p-4">
+    <div className="bg-white border border-[#D8DEE7] rounded-xl p-4 mt-4">
       <div className="flex flex-wrap items-center gap-2 mb-3">
         <p className="text-[11px] tracking-[0.1em] uppercase text-[#5C6B80] font-bold mr-1">Who&apos;s missing SLA</p>
         <select value={dayFilter} onChange={(e) => setDayFilter(e.target.value)} className="border border-[#D8DEE7] rounded-md px-2 py-1 text-[12px] font-semibold">
@@ -108,7 +108,7 @@ export default function SlaBoard() {
                   const b = r.byClass[c as SlaClass];
                   return (
                     <td key={c} className="px-2 py-1.5 text-right tabular-nums text-[#5C6B80]">
-                      {b ? <span><b className={b.avg <= slaConfig[c].targetMin ? "text-[#177A47]" : "text-[#C0392B]"}>{b.avg}m</b> <span className="text-[10px] text-[#96A2B4]">·{b.n}</span></span> : "—"}
+                      {b ? <span><b className={b.avg <= slaConfig[c].targetMin ? "text-[#177A47]" : "text-[#C0392B]"}>{b.avg <= slaConfig[c].targetMin ? "" : "▲"}{b.avg}m</b> <span className="text-[10px] text-[#96A2B4]">·{b.n}</span></span> : "—"}
                     </td>
                   );
                 })}
