@@ -90,7 +90,7 @@ export default function Home() {
     if (stay) return;
     const isNative = typeof window !== "undefined" && !!(window as unknown as { Capacitor?: { isNativePlatform?: () => boolean } }).Capacitor;
     const id = getIdentity();
-    if (isNative) router.replace(id ? roleHome(id.role) : "/m");
+    if (isNative) router.replace(id ? roleHome(id.role) : "/driver");
     else if (id) router.replace(roleHome(id.role));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);

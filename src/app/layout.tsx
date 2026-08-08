@@ -42,7 +42,7 @@ var native=!!window.Capacitor,raw=null;try{raw=localStorage.getItem('ng-marshal-
 var role=null;if(raw){try{role=JSON.parse(raw).role;}catch(e){}}
 var home=role==='driver'?'/driver':role==='operator'?'/operator':role==='supervisor'?'/supervisor':null;
 if(home){location.replace(home);return;}
-if(native){location.replace('/m');}
+if(native){location.replace('/driver');}
 }catch(e){}})();`,
           }}
         />

@@ -291,6 +291,52 @@ export function logIncentive(l: DriverTripLog, rc: RateCard, milestoneTeu: numbe
   return Math.round(base + milestone);
 }
 
+// ── Driver daily पर्ची report (reporting-only, no live tracking) ───────────────
+// The end-of-day parchi, entered by the driver as a digital form. One report per
+// ITV per day. Two sections mirror the paper form (Normal + Scanning); each is a
+// list of container rows. Trip count is derived = number of rows — the driver never
+// counts anything. Dropdowns everywhere except the container number to kill mistakes.
+export interface ReportRow {
+  type: "20" | "40";   // container size
+  from: string;        // origin location  (CT2/CT3/T2/CT4/MICT/EXIM-1/EXIM-2)
+  to: string;          // destination location
+  mode?: string;       // movement mode (dropdown — values set by the operator)
+  container?: string;  // container number, typed
+}
+
+export interface DriverReport {
+  id: number;
+  date: string;         // YYYY-MM-DD (auto — the shift date)
+  itv: string;          // ITV call sign, from login
+  driverId: string;
+  driverName: string;
+  batch?: string;       // batch no that day
+  startKm?: number;
+  endKm?: number;
+  diesel?: number;      // litres issued
+  breakdown?: string;   // breakdown time / note (free text)
+  remark?: string;
+  normal: ReportRow[];   // सामान्य section
+  scanning: ReportRow[]; // स्कैनिंग section
+  submittedAt: number;   // epoch ms
+}
+
+/** Total container rows in a report = trips done that day. */
+export function reportRowCount(r: DriverReport): number {
+  return r.normal.length + r.scanning.length;
+}
+
+// Who was on which ITV, and when — written every time a driver logs in / goes on
+// duty. This is the daily assignment trail that replaces logout: a handover is just
+// the next person logging in on the same ITV, which appends a new row.
+export interface ShiftLogEntry {
+  date: string;        // YYYY-MM-DD
+  itv: string;         // ITV call sign
+  driverId: string;
+  driverName: string;
+  at: number;          // epoch ms
+}
+
 // ── SLA / TAT — the spine ─────────────────────────────────────────────────────
 // Four SLA turnaround targets. On-berth vs Normal check-package share every touch
 // point — they differ ONLY in target + priority (a vessel at berth is tight). The

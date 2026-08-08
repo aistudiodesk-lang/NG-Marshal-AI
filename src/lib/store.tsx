@@ -3,7 +3,7 @@
 import React, { createContext, useContext, useEffect, useReducer, useRef } from "react";
 import { getDataStore } from "./data";
 import type { DataStore } from "./data/DataStore";
-import { Assignment, Driver, Equipment, EquipmentLog, Issue, MovementType, Offer, Operator, PlanProposal, PlanRules, RateCard, Site, SummaryNotes, Trip, Vehicle, Vendor, Verification, ContainerHistory, FeedSnapshot, DutyPriority, isLive, DriverTripLog, SlaConfig, DEFAULT_SLA_CONFIG } from "./types";
+import { Assignment, Driver, Equipment, EquipmentLog, Issue, MovementType, Offer, Operator, PlanProposal, PlanRules, RateCard, Site, SummaryNotes, Trip, Vehicle, Vendor, Verification, ContainerHistory, FeedSnapshot, DutyPriority, isLive, DriverTripLog, DriverReport, ShiftLogEntry, SlaConfig, DEFAULT_SLA_CONFIG } from "./types";
 import {
   DEFAULT_SUMMARY_NOTES, DRIVERS, EQUIPMENT, HOT_JOBS, ME_DRIVER_ID, ME_VEHICLE_ID, OPERATORS, PLAN_RULES, RATE_CARD, SEED_ISSUES,
   SEED_TRIPS, SHIFT, SITE, SITES, SUPERVISORS, VEHICLES,
@@ -29,6 +29,9 @@ export interface AppState {
   lastFeedAt: Record<string, number>; // direction → newest feed timestamp seen
   driverLogs: DriverTripLog[]; // per-driver-per-day trip/TEU records (manual or uploaded)
   nextDriverLogId: number;
+  driverReports: DriverReport[]; // end-of-day पर्ची forms filled by the driver app (reporting only)
+  nextReportId: number;
+  shiftLog: ShiftLogEntry[]; // who was on which ITV, per login — the daily assignment trail (no logout)
   sites: Site[]; // projects/sites the operator runs
   activeSiteId: string; // currently-selected site
   planRules: PlanRules; // allocation rules — editable in console, versioned
@@ -103,6 +106,7 @@ type Action =
   | { type: "addOperator"; name: string; phone: string; vendor: string }
   | { type: "mapOperator"; equipmentId: string; operatorId: string | null }
   | { type: "logEquipmentUsage"; equipmentId: string; operatorId: string; date: string; hours: number; moves: number; note?: string; enteredBy: string }
+  | { type: "submitReport"; report: Omit<DriverReport, "id" | "driverId" | "driverName" | "submittedAt"> }
   | { type: "addDriverLog"; log: Omit<DriverTripLog, "id" | "at" | "source">; source?: "manual" | "upload" }
   | { type: "deleteDriverLog"; id: number }
   | { type: "importDriverLogs"; list: Omit<DriverTripLog, "id" | "at" | "source">[] }
@@ -389,13 +393,24 @@ function coreReducer(s: AppState, a: Action): AppState {
         if (v.driverId === s.meDriverId) return { ...v, driverId: undefined }; // driver moved to mv
         return v;
       });
-      return {
+      // Record the login in the daily assignment trail (who is on which ITV, when).
+      // This is what replaces logout: the next person on this ITV appends a new row.
+      const meDrv = s.drivers.find((d) => d.id === s.meDriverId);
+      const logEntry: ShiftLogEntry = {
+        date: new Date().toISOString().slice(0, 10),
+        itv: mv,
+        driverId: s.meDriverId,
+        driverName: meDrv?.name ?? "",
+        at: Date.now(),
+      };
+      return applyRetention({
         ...s,
         drivers: s.drivers.map((d) => (d.id === s.meDriverId ? { ...d, onDuty: true } : d)),
         vehicles,
+        shiftLog: [logEntry, ...s.shiftLog],
         nextOfferIn: 4,
         toast: `ड्यूटी शुरू · ITV ${mv} live ✓`,
-      };
+      });
     }
 
     case "goOffDuty": {
@@ -1007,6 +1022,24 @@ function coreReducer(s: AppState, a: Action): AppState {
       return { ...s, equipmentLogs: [log, ...s.equipmentLogs], nextLogId: s.nextLogId + 1, toast: `Logged ${a.hours}h / ${a.moves} moves · ${a.equipmentId}` };
     }
 
+    case "submitReport": {
+      const me = s.drivers.find((d) => d.id === s.meDriverId);
+      const report: DriverReport = {
+        ...a.report,
+        id: s.nextReportId,
+        driverId: s.meDriverId,
+        driverName: me?.name ?? "",
+        submittedAt: Date.now(),
+      };
+      const rows = report.normal.length + report.scanning.length;
+      return applyRetention({
+        ...s,
+        driverReports: [report, ...s.driverReports],
+        nextReportId: s.nextReportId + 1,
+        toast: `पर्ची जमा ✓ ${rows} ${rows === 1 ? "trip" : "trips"} दर्ज`,
+      });
+    }
+
     case "addDriverLog": {
       const log: DriverTripLog = { ...resolveLogDriver(s, a.log), id: s.nextDriverLogId, at: s.now, source: a.source ?? "manual" };
       return { ...s, driverLogs: [log, ...s.driverLogs], nextDriverLogId: s.nextDriverLogId + 1, toast: `Trip log saved · ${log.driverName || log.itv}` };
@@ -1204,6 +1237,9 @@ const initial: AppState = {
   feeds: [],
   driverLogs: [],
   nextDriverLogId: 1,
+  driverReports: [],
+  nextReportId: 1,
+  shiftLog: [],
   lastFeedAt: {},
   sites: SITES,
   activeSiteId: SITE.id,
@@ -1249,6 +1285,8 @@ export const RETENTION = {
   feeds: 1500,          // ~6 months at 8 uploads/day — the pendency trend line
   trips: 20000,         // per-ITV and per-driver productivity
   driverLogs: 60000,    // per-ITV-day rows carrying SLA/TAT cycles (a transport report = thousands)
+  driverReports: 20000, // ~2 months at 8 ITVs × ... plenty; end-of-day parchi forms
+  shiftLog: 20000,      // ~5 years at 8 logins/day — the daily assignment trail
   issues: 3000,
   equipmentLogs: 8000,
 } as const;
@@ -1263,6 +1301,8 @@ function applyRetention(s: AppState): AppState {
     feeds: s.feeds.length > RETENTION.feeds ? s.feeds.slice(0, RETENTION.feeds) : s.feeds,
     trips: s.trips.length > RETENTION.trips ? s.trips.slice(-RETENTION.trips) : s.trips,
     driverLogs: s.driverLogs.length > RETENTION.driverLogs ? s.driverLogs.slice(0, RETENTION.driverLogs) : s.driverLogs,
+    driverReports: s.driverReports.length > RETENTION.driverReports ? s.driverReports.slice(0, RETENTION.driverReports) : s.driverReports,
+    shiftLog: s.shiftLog.length > RETENTION.shiftLog ? s.shiftLog.slice(0, RETENTION.shiftLog) : s.shiftLog,
     issues: s.issues.length > RETENTION.issues ? s.issues.slice(0, RETENTION.issues) : s.issues,
     equipmentLogs: s.equipmentLogs.length > RETENTION.equipmentLogs ? s.equipmentLogs.slice(0, RETENTION.equipmentLogs) : s.equipmentLogs,
   };
@@ -1273,6 +1313,7 @@ const PERSIST_KEYS = [
   "vendors", "rateCard", "milestoneTeu", "slaConfig", "sites", "activeSiteId", "planRules", "summaryNotes",
   "equipment", "operators", "equipmentLogs", "nextLogId",
   "driverLogs", "nextDriverLogId",
+  "driverReports", "nextReportId", "shiftLog",
   "nextTripId", "nextIssueId", "passesThisShift", "milestoneHit",
 ] as const;
 type Persistable = Pick<AppState, (typeof PERSIST_KEYS)[number]>;
