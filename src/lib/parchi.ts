@@ -19,15 +19,40 @@ function sb(): SupabaseClient {
   return client;
 }
 
-/** Upload one parchi photo. Path: <driverId>/<YYYY-MM-DD>/<ts>.<ext>. Throws on failure. */
+// Phone cameras shoot 8–12 MB photos — far bigger than a readable parchi needs.
+// Downscale to ~1600px / JPEG 0.7 in the browser BEFORE upload (parchi text stays
+// crisp, file drops to ~200–400 KB). Never lose a capture: any failure → original file.
+async function compressImage(file: File): Promise<Blob> {
+  const MAX = 1600, QUALITY = 0.7;
+  try {
+    const bitmap = await createImageBitmap(file, { imageOrientation: "from-image" } as ImageBitmapOptions);
+    const scale = Math.min(1, MAX / Math.max(bitmap.width, bitmap.height));
+    const w = Math.round(bitmap.width * scale), h = Math.round(bitmap.height * scale);
+    const canvas = document.createElement("canvas");
+    canvas.width = w; canvas.height = h;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return file;
+    ctx.drawImage(bitmap, 0, 0, w, h);
+    bitmap.close?.();
+    const blob = await new Promise<Blob | null>((res) => canvas.toBlob(res, "image/jpeg", QUALITY));
+    return blob && blob.size < file.size ? blob : file;
+  } catch {
+    return file;
+  }
+}
+
+/** Upload one parchi photo (compressed). Path: <driverId>/<YYYY-MM-DD>/<ts>.<ext>. Throws on failure. */
 export async function uploadParchi(file: File, driverId: string, driverName: string): Promise<string> {
   const now = new Date();
-  const ext = (file.name.split(".").pop() || "jpg").toLowerCase().replace(/[^a-z0-9]/g, "") || "jpg";
+  const blob = await compressImage(file);
+  const compressed = blob !== file; // compress() returns a fresh jpeg blob on success
+  const ext = compressed ? "jpg" : ((file.name.split(".").pop() || "jpg").toLowerCase().replace(/[^a-z0-9]/g, "") || "jpg");
+  const contentType = compressed ? "image/jpeg" : (file.type || "image/jpeg");
   const path = `${driverId}/${now.toISOString().slice(0, 10)}/${now.getTime()}.${ext}`;
 
   const { error: upErr } = await sb()
     .storage.from("parchis")
-    .upload(path, file, { contentType: file.type || "image/jpeg", upsert: false });
+    .upload(path, blob, { contentType, upsert: false });
   if (upErr) throw new Error(upErr.message);
 
   const { error: insErr } = await sb()
