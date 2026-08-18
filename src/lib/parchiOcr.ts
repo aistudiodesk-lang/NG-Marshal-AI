@@ -56,6 +56,25 @@ export function isValidContainer(code: string): boolean {
   return cd !== null && cd === Number(c[10]);
 }
 
+// OCR digit/letter look-alikes. A container is ALWAYS 4 letters + 7 digits, so we know
+// which half each char belongs to and can coerce the common confusions, then let the
+// ISO 6346 check digit confirm the guess (e.g. "MSMUB095631" -> "MSMU8095631" ✓).
+const TO_LETTER: Record<string, string> = { "0": "O", "1": "I", "8": "B", "5": "S", "2": "Z", "6": "G", "4": "A" };
+const TO_DIGIT: Record<string, string> = { O: "0", Q: "0", D: "0", I: "1", L: "1", B: "8", S: "5", Z: "2", G: "6", A: "4", T: "7" };
+
+/** Try to recover a valid ISO 6346 container number from a noisy OCR token. */
+export function coerceContainer(token: string | undefined): string | null {
+  const t = (token || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+  for (let i = 0; i + 11 <= t.length; i++) {
+    const w = t.slice(i, i + 11);
+    const cand =
+      w.slice(0, 4).split("").map((c) => TO_LETTER[c] ?? c).join("") +
+      w.slice(4).split("").map((c) => TO_DIGIT[c] ?? c).join("");
+    if (isValidContainer(cand)) return cand;
+  }
+  return null;
+}
+
 // ── Field parser ─────────────────────────────────────────────────────────────────
 const up = (s: string) => s.toUpperCase();
 
@@ -75,46 +94,78 @@ export function parseParchiText(raw: string): ParsedParchi {
   const text = raw || "";
   const U = up(text);
 
-  // container: 4 letters + 7 digits anywhere; prefer a checksum-valid one
-  const candidates = (U.match(/[A-Z]{4}\s?\d{7}/g) || []).map((s) => s.replace(/\s/g, ""));
+  // container: 4 letters + 7 digits. Try hardest to get a CHECKSUM-VALID one, correcting
+  // OCR confusions (8↔B, 0↔O, …) so a misread like "MSMUB095631" recovers to "MSMU8095631".
   let containerNo: string | undefined;
   let containerValid = false;
-  for (const c of candidates) {
+  // 1) an exact, already-valid one anywhere
+  for (const c of (U.match(/[A-Z]{4}\s?\d{7}/g) || []).map((s) => s.replace(/\s/g, ""))) {
     if (isValidContainer(c)) { containerNo = c; containerValid = true; break; }
   }
-  if (!containerNo && candidates.length) containerNo = candidates[0]; // best effort, flagged invalid
+  // 2) coerce the token on the labelled "Container No" line
+  if (!containerNo) {
+    const c = coerceContainer(afterLabel(U, /CONTAINER\s*N[O0]/));
+    if (c) { containerNo = c; containerValid = true; }
+  }
+  // 3) coerce any long alphanumeric token, preferring ones that start with letters
+  if (!containerNo) {
+    const toks = (U.match(/[A-Z0-9]{11,}/g) || []).sort(
+      (a, b) => (/^[A-Z]{3}/.test(b) ? 1 : 0) - (/^[A-Z]{3}/.test(a) ? 1 : 0)
+    );
+    for (const t of toks) { const c = coerceContainer(t); if (c) { containerNo = c; containerValid = true; break; } }
+  }
+  // 4) last resort: show the raw candidate, flagged invalid for manual review
+  if (!containerNo) {
+    const c = (U.match(/[A-Z]{4}\s?\d{7}/g) || [])[0];
+    if (c) { containerNo = c.replace(/\s/g, ""); containerValid = false; }
+  }
 
   // cycle
-  const cycle = /\bEXPORT\b/.test(U) ? "EXPORT" : /\bIMPORT\b/.test(U) ? "IMPORT" : undefined;
+  // cycle — tolerate abbreviations ("EXPRT", "IMPRT") seen on terminal tickets
+  const cycle = /EXP.?RT|EXPORT/.test(U) ? "EXPORT" : /IMP.?RT|IMPORT/.test(U) ? "IMPORT" : undefined;
 
   // parchi type — direction + cycle (address always contains "CFS", so don't key on that)
-  const dir = /GATE\s*OUT/.test(U) ? "GATE OUT" : /GATE\s*IN/.test(U) ? "GATE IN" : undefined;
+  const dir = /GATE\s*OUT/.test(U) ? "GATE OUT"
+    : /GATE\s*IN/.test(U) ? "GATE IN"
+    : /DROP.?OFF/.test(U) ? "DROP-OFF"
+    : /PICK.?UP/.test(U) ? "PICK-UP"
+    : /RECEIVE|SCAN/.test(U) ? "RECEIVE"
+    : undefined;
   const parchiType = [dir, cycle].filter(Boolean).join(" · ") || undefined;
 
-  // date + time
-  const dt = text.match(/(\d{2}\/\d{2}\/\d{4})\s+(\d{1,2}:\d{2})/);
+  // date + time — DD/MM/YYYY (Adani) or ISO YYYY-MM-DD (terminal tickets)
+  const dt = text.match(/(\d{2}\/\d{2}\/\d{4})\s+(\d{1,2}:\d{2})/) || text.match(/(\d{4}-\d{2}-\d{2})\s+(\d{1,2}:\d{2}(?::\d{2})?)/);
   const docDatetime = dt ? `${dt[1]} ${dt[2]}` : undefined;
 
   // vehicle no (Indian plate)
   const veh = U.match(/[A-Z]{2}\s?\d{1,2}\s?[A-Z]{1,2}\s?\d{3,4}/);
   const vehicleNo = veh ? veh[0].replace(/\s/g, "") : undefined;
 
-  // gate pass no — digits on the "Pass No" line
-  const passLine = afterLabel(U, /GATE\s*I.{0,3}\s*PASS\s*N[O0]/) || afterLabel(U, /PASS\s*N[O0]/);
-  const gatePassNo = passLine ? (passLine.match(/\d{4,8}/)?.[0]) : undefined;
+  // gate pass no — Tesseract mangles the label ("Gate in Pass No" -> "Gate i 355 NO"),
+  // so match the line by shape: a "Gate ... No <digits>" line that isn't Mode/Time/Date.
+  const lines = U.split(/\r?\n/);
+  const passLine =
+    lines.find((l) => /(PASS\s*N[O0]|TRANSACT)/.test(l) && /\d{5,7}/.test(l)) ||
+    lines.find((l) => /GATE\s*I/.test(l) && /N[O0]\b/.test(l) && /\d{5,7}/.test(l) && !/(MODE|TIME|DATE|\/)/.test(l));
+  const passNums = passLine ? passLine.match(/\d{5,7}/g) : null;
+  const gatePassNo = passNums ? passNums[passNums.length - 1] : undefined; // value follows the label
 
   // seal no — 2 letters + 6-9 digits (EU31887903); skip the vehicle and anything
   // that's just a tail of the container number (e.g. "BU1635755" out of MSBU1635755)
-  const sealNo = (U.match(/[A-Z]{2}\d{6,9}/g) || []).find(
-    (s) => s !== vehicleNo && !(containerNo && containerNo.includes(s))
-  );
+  const cDigits = (containerNo || "").replace(/\D/g, "");
+  const sealNo = (U.match(/[A-Z]{2}\d{6,9}/g) || []).find((s) => {
+    if (s === vehicleNo) return false;
+    const sd = s.replace(/\D/g, "");
+    if (cDigits && (cDigits.includes(sd) || sd.includes(cDigits))) return false; // tail of container OCR
+    return true;
+  });
 
   // transporter — best effort (often under the stamp)
   let transporter = afterLabel(U, /TRANSP[O0]RTER\s*NAME/);
   if (transporter && !/[A-Z]{3,}/.test(transporter)) transporter = undefined; // garbage guard
 
   // is this even a parchi? require a couple of Adani-parchi anchors
-  const anchors = [/ADANI/, /CONTAINER\s*N[O0]/, /GATE\s*I/, /CYCLE\s*TYPE/, /CFS/].filter((r) => r.test(U)).length;
+  const anchors = [/ADANI/, /AICTPL/, /CONTAINER\s*N[O0]/, /GATE\s*I/, /CYCLE\s*TYPE|CATEGORY/, /CFS/, /DROP.?OFF/, /TRANSACT/].filter((r) => r.test(U)).length;
   const isParchi = anchors >= 2 || containerValid;
 
   return { parchiType, containerNo, containerValid, gatePassNo, cycle, docDatetime, vehicleNo, sealNo, transporter, isParchi };
