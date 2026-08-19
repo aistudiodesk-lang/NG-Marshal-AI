@@ -2,11 +2,12 @@
 // Called by the /parchis page after browser OCR, and again if the operator edits a field.
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
+import { computeRevenue } from "@/lib/revenue";
 
 export const dynamic = "force-dynamic";
 
 interface Fields {
-  parchiType?: string; containerNo?: string; containerValid?: boolean; gatePassNo?: string;
+  parchiType?: string; containerNo?: string; containerValid?: boolean; isoCode?: string; gatePassNo?: string;
   cycle?: string; docDatetime?: string; vehicleNo?: string; sealNo?: string; transporter?: string;
 }
 
@@ -19,16 +20,24 @@ export async function POST(req: NextRequest) {
     auth: { persistSession: false },
   });
 
+  // revenue is computed HERE (single source of truth) from the parchi type + ISO code,
+  // so the driver app and the office page can never disagree.
+  const rev = computeRevenue(f.parchiType, f.isoCode);
+
   const patch: Record<string, unknown> = {
     parchi_type: f.parchiType ?? null,
     container_no: f.containerNo ?? null,
     container_valid: f.containerValid ?? null,
+    iso_code: f.isoCode ?? null,
     gate_pass_no: f.gatePassNo ?? null,
     cycle: f.cycle ?? null,
     doc_datetime: f.docDatetime ?? null,
     vehicle_no: f.vehicleNo ?? null,
     seal_no: f.sealNo ?? null,
     transporter: f.transporter ?? null,
+    size_ft: rev.sizeFt,
+    revenue: rev.revenue,
+    revenue_eligible: rev.eligible,
     ocr_at: new Date().toISOString(),
   };
   // only touch raw text when we actually ran OCR (manual field edits leave it intact)
@@ -37,5 +46,5 @@ export async function POST(req: NextRequest) {
   const { error } = await sb.from("parchi_photos").update(patch).eq("id", body.id);
 
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
-  return NextResponse.json({ ok: true });
+  return NextResponse.json({ ok: true, revenue: rev.revenue, sizeFt: rev.sizeFt, eligible: rev.eligible });
 }

@@ -11,6 +11,7 @@ export interface ParsedParchi {
   parchiType?: string;      // e.g. "GATE IN · IMPORT"
   containerNo?: string;     // ISO 6346, e.g. MSBU1635755
   containerValid: boolean;  // check-digit passed
+  isoCode?: string;         // Size/Type/ISO code, e.g. 2210 / 4510 / 441E
   gatePassNo?: string;
   cycle?: "IMPORT" | "EXPORT";
   docDatetime?: string;     // "15/08/2026 10:24"
@@ -93,6 +94,7 @@ function afterLabel(text: string, labelRe: RegExp): string | undefined {
 export function parseParchiText(raw: string): ParsedParchi {
   const text = raw || "";
   const U = up(text);
+  const lines = U.split(/\r?\n/);
 
   // container: 4 letters + 7 digits. Try hardest to get a CHECKSUM-VALID one, correcting
   // OCR confusions (8↔B, 0↔O, …) so a misread like "MSMUB095631" recovers to "MSMU8095631".
@@ -133,6 +135,11 @@ export function parseParchiText(raw: string): ParsedParchi {
     : undefined;
   const parchiType = [dir, cycle].filter(Boolean).join(" · ") || undefined;
 
+  // size/type/ISO code — a 4-char code starting 2 or 4 (2210, 4510, 441E). OCR mangles
+  // the label ("ISO" -> "150"), so anchor loosely then grab the [2/4]xxx token on that line.
+  const isoLine = lines.find((l) => /(S[I1]ZE|[I1]S[O0]|TYPE|\b150\b)/.test(l) && /\b[24][0-9A-Z]{3}\b/.test(l));
+  const isoCode = isoLine?.match(/\b[24][0-9A-Z]{3}\b/)?.[0];
+
   // date + time — DD/MM/YYYY (Adani) or ISO YYYY-MM-DD (terminal tickets)
   const dt = text.match(/(\d{2}\/\d{2}\/\d{4})\s+(\d{1,2}:\d{2})/) || text.match(/(\d{4}-\d{2}-\d{2})\s+(\d{1,2}:\d{2}(?::\d{2})?)/);
   const docDatetime = dt ? `${dt[1]} ${dt[2]}` : undefined;
@@ -143,7 +150,6 @@ export function parseParchiText(raw: string): ParsedParchi {
 
   // gate pass no — Tesseract mangles the label ("Gate in Pass No" -> "Gate i 355 NO"),
   // so match the line by shape: a "Gate ... No <digits>" line that isn't Mode/Time/Date.
-  const lines = U.split(/\r?\n/);
   const passLine =
     lines.find((l) => /(PASS\s*N[O0]|TRANSACT)/.test(l) && /\d{5,7}/.test(l)) ||
     lines.find((l) => /GATE\s*I/.test(l) && /N[O0]\b/.test(l) && /\d{5,7}/.test(l) && !/(MODE|TIME|DATE|\/)/.test(l));
@@ -168,5 +174,5 @@ export function parseParchiText(raw: string): ParsedParchi {
   const anchors = [/ADANI/, /AICTPL/, /CONTAINER\s*N[O0]/, /GATE\s*I/, /CYCLE\s*TYPE|CATEGORY/, /CFS/, /DROP.?OFF/, /TRANSACT/].filter((r) => r.test(U)).length;
   const isParchi = anchors >= 2 || containerValid;
 
-  return { parchiType, containerNo, containerValid, gatePassNo, cycle, docDatetime, vehicleNo, sealNo, transporter, isParchi };
+  return { parchiType, containerNo, containerValid, isoCode, gatePassNo, cycle, docDatetime, vehicleNo, sealNo, transporter, isParchi };
 }

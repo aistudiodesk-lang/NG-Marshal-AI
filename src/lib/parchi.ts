@@ -41,8 +41,8 @@ async function compressImage(file: File): Promise<Blob> {
   }
 }
 
-/** Upload one parchi photo (compressed). Path: <driverId>/<YYYY-MM-DD>/<ts>.<ext>. Throws on failure. */
-export async function uploadParchi(file: File, driverId: string, driverName: string): Promise<string> {
+/** Upload one parchi photo (compressed). Returns the new row's id + storage path. Throws on failure. */
+export async function uploadParchi(file: File, driverId: string, driverName: string): Promise<{ id: string; path: string }> {
   const now = new Date();
   const blob = await compressImage(file);
   const compressed = blob !== file; // compress() returns a fresh jpeg blob on success
@@ -55,23 +55,25 @@ export async function uploadParchi(file: File, driverId: string, driverName: str
     .upload(path, blob, { contentType, upsert: false });
   if (upErr) throw new Error(upErr.message);
 
-  const { error: insErr } = await sb()
+  const { data, error: insErr } = await sb()
     .from("parchi_photos")
-    .insert({ driver_id: driverId, driver_name: driverName, storage_path: path, captured_at: now.toISOString() });
+    .insert({ driver_id: driverId, driver_name: driverName, storage_path: path, captured_at: now.toISOString() })
+    .select("id")
+    .single();
   if (insErr) throw new Error(insErr.message);
 
-  return path;
+  return { id: data.id as string, path };
 }
 
-/** How many parchis this driver captured today — survives app reloads. */
-export async function countToday(driverId: string): Promise<number> {
+/** Today's parchi count + total revenue for this driver — survives app reloads. */
+export async function todayStats(driverId: string): Promise<{ count: number; revenue: number }> {
   const start = new Date();
   start.setHours(0, 0, 0, 0);
-  const { count, error } = await sb()
+  const { data, error } = await sb()
     .from("parchi_photos")
-    .select("id", { count: "exact", head: true })
+    .select("revenue")
     .eq("driver_id", driverId)
     .gte("captured_at", start.toISOString());
-  if (error) return 0;
-  return count ?? 0;
+  if (error || !data) return { count: 0, revenue: 0 };
+  return { count: data.length, revenue: data.reduce((a, r) => a + (r.revenue || 0), 0) };
 }

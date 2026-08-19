@@ -12,17 +12,18 @@ import { ocrImage } from "@/lib/parchiOcrClient";
 
 interface Ocr {
   parchiType?: string | null; containerNo?: string | null; containerValid?: boolean | null;
-  gatePassNo?: string | null; cycle?: string | null; docDatetime?: string | null;
+  isoCode?: string | null; gatePassNo?: string | null; cycle?: string | null; docDatetime?: string | null;
   vehicleNo?: string | null; sealNo?: string | null; transporter?: string | null; ocrAt?: string | null;
+  sizeFt?: number | null; revenue?: number | null; eligible?: boolean | null;
 }
 interface Photo { id: string; url: string | null; capturedAt: string; ocr: Ocr | null }
-interface DriverGroup { driverId: string; driverName: string; count: number; photos: Photo[] }
-interface Feed { date: string; total: number; drivers: DriverGroup[] }
+interface DriverGroup { driverId: string; driverName: string; count: number; revenue: number; photos: Photo[] }
+interface Feed { date: string; total: number; totalRevenue: number; drivers: DriverGroup[] }
 
-interface FieldSet { parchiType: string; containerNo: string; cycle: string; docDatetime: string; vehicleNo: string; gatePassNo: string; sealNo: string; transporter: string }
-const EMPTY: FieldSet = { parchiType: "", containerNo: "", cycle: "", docDatetime: "", vehicleNo: "", gatePassNo: "", sealNo: "", transporter: "" };
+interface FieldSet { parchiType: string; containerNo: string; isoCode: string; cycle: string; docDatetime: string; vehicleNo: string; gatePassNo: string; sealNo: string; transporter: string }
+const EMPTY: FieldSet = { parchiType: "", containerNo: "", isoCode: "", cycle: "", docDatetime: "", vehicleNo: "", gatePassNo: "", sealNo: "", transporter: "" };
 const fromOcr = (o: Ocr): FieldSet => ({
-  parchiType: o.parchiType ?? "", containerNo: o.containerNo ?? "", cycle: o.cycle ?? "", docDatetime: o.docDatetime ?? "",
+  parchiType: o.parchiType ?? "", containerNo: o.containerNo ?? "", isoCode: o.isoCode ?? "", cycle: o.cycle ?? "", docDatetime: o.docDatetime ?? "",
   vehicleNo: o.vehicleNo ?? "", gatePassNo: o.gatePassNo ?? "", sealNo: o.sealNo ?? "", transporter: o.transporter ?? "",
 });
 
@@ -37,6 +38,7 @@ export default function ParchisPage() {
   const [edits, setEdits] = useState<Record<string, FieldSet>>({});
   const [busy, setBusy] = useState<Record<string, boolean>>({});
   const [saved, setSaved] = useState<Record<string, boolean>>({});
+  const [revById, setRevById] = useState<Record<string, number>>({});
   const [bulk, setBulk] = useState<{ on: boolean; done: number; total: number }>({ on: false, done: 0, total: 0 });
 
   const load = useCallback(async (d: string) => {
@@ -59,10 +61,12 @@ export default function ParchisPage() {
 
   const save = useCallback(async (id: string, fs: FieldSet, raw?: string) => {
     const fields = { ...fs, containerValid: isValidContainer(fs.containerNo) };
-    await fetch("/api/parchis/extract", {
+    const res = await fetch("/api/parchis/extract", {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ id, fields, raw }),
     });
+    const j = await res.json().catch(() => ({}));
+    if (typeof j.revenue === "number") setRevById((m) => ({ ...m, [id]: j.revenue }));
     setSaved((s) => ({ ...s, [id]: true }));
     setTimeout(() => setSaved((s) => ({ ...s, [id]: false })), 1800);
   }, []);
@@ -73,9 +77,9 @@ export default function ParchisPage() {
     try {
       const { raw, fields } = await ocrImage(photo.url);
       const fs: FieldSet = {
-        parchiType: fields.parchiType ?? "", containerNo: fields.containerNo ?? "", cycle: fields.cycle ?? "",
-        docDatetime: fields.docDatetime ?? "", vehicleNo: fields.vehicleNo ?? "", gatePassNo: fields.gatePassNo ?? "",
-        sealNo: fields.sealNo ?? "", transporter: fields.transporter ?? "",
+        parchiType: fields.parchiType ?? "", containerNo: fields.containerNo ?? "", isoCode: fields.isoCode ?? "",
+        cycle: fields.cycle ?? "", docDatetime: fields.docDatetime ?? "", vehicleNo: fields.vehicleNo ?? "",
+        gatePassNo: fields.gatePassNo ?? "", sealNo: fields.sealNo ?? "", transporter: fields.transporter ?? "",
       };
       setEdits((e) => ({ ...e, [photo.id]: fs }));
       await save(photo.id, fs, raw);
@@ -123,8 +127,9 @@ export default function ParchisPage() {
             </button>
           )}
           {feed && (
-            <span className="ml-auto text-[15px] font-extrabold">
-              कुल <span className="text-[#1E9E5A]">{feed.total}</span> पर्ची · {feed.drivers.length} ड्राइवर
+            <span className="ml-auto text-[15px] font-extrabold flex items-center gap-3">
+              <span>कुल <span className="text-[#1E9E5A]">{feed.total}</span> पर्ची</span>
+              <span className="bg-[#FFF3D6] text-[#8A5A00] rounded-lg px-2.5 py-1">💰 ₹{feed.totalRevenue}</span>
             </span>
           )}
         </div>
@@ -136,12 +141,16 @@ export default function ParchisPage() {
           <section key={d.driverId} className="bg-white rounded-2xl border border-[#DCE3EC] overflow-hidden">
             <div className="flex items-center justify-between px-4 py-3 border-b border-[#EDF0F4]">
               <span className="font-extrabold text-[16px]">{d.driverName}</span>
-              <span className="bg-[#1E9E5A] text-white text-[13px] font-extrabold rounded-full px-3 py-1">{d.count} पर्ची</span>
+              <span className="flex items-center gap-2">
+                <span className="bg-[#FFF3D6] text-[#8A5A00] text-[13px] font-extrabold rounded-full px-3 py-1">💰 ₹{d.revenue}</span>
+                <span className="bg-[#1E9E5A] text-white text-[13px] font-extrabold rounded-full px-3 py-1">{d.count} पर्ची</span>
+              </span>
             </div>
             <div className="p-3 grid grid-cols-1 sm:grid-cols-2 gap-3">
               {d.photos.map((p) => (
                 <PhotoCard
                   key={p.id} photo={p} fields={edits[p.id]} busy={!!busy[p.id]} saved={!!saved[p.id]}
+                  revenue={revById[p.id] ?? p.ocr?.revenue ?? null}
                   onExtract={() => runOcr(p)}
                   onField={(k, v) => setField(p.id, k, v)}
                   onSave={() => edits[p.id] && save(p.id, edits[p.id])}
@@ -165,8 +174,8 @@ function Field({ label, value, onChange, mono }: { label: string; value: string;
   );
 }
 
-function PhotoCard({ photo, fields, busy, saved, onExtract, onField, onSave }: {
-  photo: Photo; fields?: FieldSet; busy: boolean; saved: boolean;
+function PhotoCard({ photo, fields, busy, saved, revenue, onExtract, onField, onSave }: {
+  photo: Photo; fields?: FieldSet; busy: boolean; saved: boolean; revenue: number | null;
   onExtract: () => void; onField: (k: keyof FieldSet, v: string) => void; onSave: () => void;
 }) {
   const valid = fields ? isValidContainer(fields.containerNo) : false;
@@ -201,11 +210,11 @@ function PhotoCard({ photo, fields, busy, saved, onExtract, onField, onSave }: {
             </div>
             <div className="grid grid-cols-2 gap-2">
               <Field label="Type" value={fields.parchiType} onChange={(v) => onField("parchiType", v)} />
+              <Field label="ISO / Size" value={fields.isoCode} onChange={(v) => onField("isoCode", v.toUpperCase())} mono />
               <Field label="Cycle" value={fields.cycle} onChange={(v) => onField("cycle", v.toUpperCase())} />
               <Field label="Date/Time" value={fields.docDatetime} onChange={(v) => onField("docDatetime", v)} />
-              <Field label="Vehicle" value={fields.vehicleNo} onChange={(v) => onField("vehicleNo", v.toUpperCase())} mono />
               <Field label="Gate Pass" value={fields.gatePassNo} onChange={(v) => onField("gatePassNo", v)} mono />
-              <Field label="Seal" value={fields.sealNo} onChange={(v) => onField("sealNo", v.toUpperCase())} mono />
+              <Field label="Vehicle" value={fields.vehicleNo} onChange={(v) => onField("vehicleNo", v.toUpperCase())} mono />
             </div>
             <div className="flex items-center gap-2">
               <button onClick={onSave} className="bg-[#1E9E5A] text-white rounded-md px-3 py-1.5 text-[12px] font-bold">
@@ -214,6 +223,9 @@ function PhotoCard({ photo, fields, busy, saved, onExtract, onField, onSave }: {
               <button onClick={onExtract} disabled={busy} className="text-[#2E5395] rounded-md px-2 py-1.5 text-[12px] font-bold border border-[#CBD5E3] disabled:opacity-60">
                 {busy ? "…" : "↻ फिर OCR"}
               </button>
+              <span className={`ml-auto text-[13px] font-extrabold px-2.5 py-1 rounded ${revenue ? "bg-[#FFF3D6] text-[#8A5A00]" : "bg-[#EDF0F4] text-[#8FA0B5]"}`}>
+                {revenue ? `💰 ₹${revenue}` : "₹0"}
+              </span>
             </div>
           </div>
         )}

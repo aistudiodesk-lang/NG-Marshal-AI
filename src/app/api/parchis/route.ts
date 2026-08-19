@@ -12,8 +12,9 @@ const istToday = () => new Date(Date.now() + 5.5 * 3600 * 1000).toISOString().sl
 interface Row {
   id: string; driver_id: string; driver_name: string; storage_path: string; captured_at: string;
   parchi_type: string | null; container_no: string | null; container_valid: boolean | null;
-  gate_pass_no: string | null; cycle: string | null; doc_datetime: string | null;
+  iso_code: string | null; gate_pass_no: string | null; cycle: string | null; doc_datetime: string | null;
   vehicle_no: string | null; seal_no: string | null; transporter: string | null; ocr_at: string | null;
+  size_ft: number | null; revenue: number | null; revenue_eligible: boolean | null;
 }
 
 export async function GET(req: NextRequest) {
@@ -25,7 +26,7 @@ export async function GET(req: NextRequest) {
   // IST calendar day → UTC-aware bounds (captured_at is timestamptz)
   const { data, error } = await sb
     .from("parchi_photos")
-    .select("id,driver_id,driver_name,storage_path,captured_at,parchi_type,container_no,container_valid,gate_pass_no,cycle,doc_datetime,vehicle_no,seal_no,transporter,ocr_at")
+    .select("id,driver_id,driver_name,storage_path,captured_at,parchi_type,container_no,container_valid,iso_code,gate_pass_no,cycle,doc_datetime,vehicle_no,seal_no,transporter,ocr_at,size_ft,revenue,revenue_eligible")
     .gte("captured_at", `${date}T00:00:00+05:30`)
     .lte("captured_at", `${date}T23:59:59+05:30`)
     .order("captured_at", { ascending: true });
@@ -48,13 +49,19 @@ export async function GET(req: NextRequest) {
       ocr: r.ocr_at
         ? {
             parchiType: r.parchi_type, containerNo: r.container_no, containerValid: r.container_valid,
-            gatePassNo: r.gate_pass_no, cycle: r.cycle, docDatetime: r.doc_datetime,
+            isoCode: r.iso_code, gatePassNo: r.gate_pass_no, cycle: r.cycle, docDatetime: r.doc_datetime,
             vehicleNo: r.vehicle_no, sealNo: r.seal_no, transporter: r.transporter, ocrAt: r.ocr_at,
+            sizeFt: r.size_ft, revenue: r.revenue, eligible: r.revenue_eligible,
           }
         : null,
     });
   }
-  const drivers = [...groups.values()].map((g) => ({ ...g, count: g.photos.length })).sort((a, b) => b.count - a.count);
+  const drivers = [...groups.values()].map((g) => ({
+    ...g,
+    count: g.photos.length,
+    revenue: g.photos.reduce((a: number, p) => a + ((p as { ocr?: { revenue?: number } }).ocr?.revenue ?? 0), 0),
+  })).sort((a, b) => b.count - a.count);
 
-  return NextResponse.json({ date, total: rows.length, drivers });
+  const totalRevenue = drivers.reduce((a, d) => a + d.revenue, 0);
+  return NextResponse.json({ date, total: rows.length, totalRevenue, drivers });
 }
