@@ -196,7 +196,7 @@ function Capture({ driverId, driverName, onSwitch }: { driverId: string; driverN
 
         {/* big camera button — never disabled; capture is instant */}
         <label className="w-full rounded-2xl py-8 flex flex-col items-center justify-center gap-2 cursor-pointer active:scale-[0.98] transition bg-[#E8641B]">
-          <input type="file" accept="image/*" capture="environment" className="hidden" onChange={onPick} />
+          <input type="file" accept="image/*" capture="environment" className="sr-only" onChange={onPick} />
           <span className="text-[46px] leading-none">📷</span>
           <span className="text-white font-extrabold text-[22px]">पर्ची कैप्चर करो</span>
           <span className="text-white/80 text-[12px]">tap to open camera</span>
