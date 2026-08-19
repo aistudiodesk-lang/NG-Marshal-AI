@@ -13,6 +13,12 @@ function getWorker(): Promise<Worker> {
   return workerP;
 }
 
+/** Warm up the OCR engine ahead of time (download the WASM/lang data during idle time,
+ *  e.g. right after login) so it never competes with a capture's upload later. */
+export function preloadOcr(): void {
+  void getWorker().catch(() => {});
+}
+
 async function ocrBlob(blob: Blob): Promise<{ raw: string; fields: ParsedParchi }> {
   const w = await getWorker();
   const { data } = await w.recognize(blob);

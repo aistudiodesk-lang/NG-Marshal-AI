@@ -1,11 +1,11 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useApp } from "@/lib/store";
 import { getIdentity, setIdentity, clearIdentity } from "@/lib/identity";
 import { uploadParchi, todayStats } from "@/lib/parchi";
-import { ocrFile } from "@/lib/parchiOcrClient";
+import { ocrFile, preloadOcr } from "@/lib/parchiOcrClient";
 import { Wordmark } from "@/components/Brand";
 
 // Dead-simple parchi collector. Two screens only:
@@ -102,64 +102,77 @@ function Login({ onLogin }: { onLogin: (d: { id: string; name: string }) => void
 }
 
 // ── CAPTURE — the whole app. Camera + today's पर्ची count + 💰 earnings. ──────────
-type Status = "idle" | "uploading" | "ok" | "error";
-type Reading = "none" | "reading";        // background OCR state (non-blocking)
+// Capture is INSTANT: the tap counts immediately and the screen is ready again at once.
+// Uploading + the heavy on-phone OCR happen in the background — the driver never waits,
+// and OCR is run one-at-a-time so it can't peg a cheap phone.
 interface Reward { revenue: number; sizeFt: 20 | 40 | null }
 
 function Capture({ driverId, driverName, onSwitch }: { driverId: string; driverName: string; onSwitch: () => void }) {
   const [count, setCount] = useState(0);
   const [revenue, setRevenue] = useState(0);
-  const [status, setStatus] = useState<Status>("idle");
-  const [reading, setReading] = useState<Reading>("none"); // OCR running in background
   const [reward, setReward] = useState<Reward | null>(null); // celebration overlay
+  const [flash, setFlash] = useState(false);                 // brief "captured ✓"
+  const [pending, setPending] = useState(0);                 // photos still uploading/reading
   const [err, setErr] = useState("");
 
-  // today's count + earnings from DB (survives app reload)
+  // Preload the OCR engine during the calm right after login (so its ~MBs download once,
+  // up front — never competing with a capture's upload), and load today's count/earnings.
   useEffect(() => {
+    preloadOcr();
     let live = true;
     todayStats(driverId).then((s) => { if (live) { setCount(s.count); setRevenue(s.revenue); } });
     return () => { live = false; };
   }, [driverId]);
 
-  // Read the parchi in the background: OCR on-device → save fields (server computes
-  // revenue) → if it's a paying gate-in parchi, celebrate and bump today's earnings.
-  const readInBackground = async (id: string, file: Blob) => {
-    setReading("reading");
-    try {
-      const { raw, fields } = await ocrFile(file);
-      const res = await fetch("/api/parchis/extract", {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ id, fields, raw }),
-      });
-      const j = await res.json();
-      if (j.eligible && j.revenue > 0) {
-        setRevenue((r) => r + j.revenue);
-        setReward({ revenue: j.revenue, sizeFt: j.sizeFt });
-        setTimeout(() => setReward(null), 2800);
-      }
-    } catch { /* photo is already safely uploaded; revenue can be filled in at the office */ }
-    finally { setReading("none"); }
-  };
+  // single-flight OCR queue — never run two OCRs at once (kills low-end phones)
+  const ocrQueue = useRef<{ id: string; file: Blob }[]>([]);
+  const ocrRunning = useRef(false);
+  const pumpOcr = useCallback(() => {
+    if (ocrRunning.current) return;
+    const job = ocrQueue.current.shift();
+    if (!job) return;
+    ocrRunning.current = true;
+    (async () => {
+      try {
+        const { raw, fields } = await ocrFile(job.file);
+        const res = await fetch("/api/parchis/extract", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ id: job.id, fields, raw }),
+        });
+        const j = await res.json();
+        if (j.eligible && j.revenue > 0) {
+          setRevenue((r) => r + j.revenue);
+          setReward({ revenue: j.revenue, sizeFt: j.sizeFt });
+          setTimeout(() => setReward(null), 2800);
+        }
+      } catch { /* photo is already saved; office can fill revenue in */ }
+      finally { ocrRunning.current = false; setPending((p) => Math.max(0, p - 1)); pumpOcr(); }
+    })();
+  }, []);
 
-  const onPick = async (e: React.ChangeEvent<HTMLInputElement>) => {
+  const onPick = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     e.target.value = ""; // allow re-picking the same shot
     if (!file) return;
-    setStatus("uploading");
+    // INSTANT: count it and flash ✓ right away — the driver is never on hold
     setErr("");
-    try {
-      const { id } = await uploadParchi(file, driverId, driverName);
-      setCount((c) => c + 1);
-      setStatus("ok");
-      setTimeout(() => setStatus((s) => (s === "ok" ? "idle" : s)), 2200);
-      void readInBackground(id, file); // fire-and-forget; never blocks the next capture
-    } catch (e2) {
-      setErr(e2 instanceof Error ? e2.message : "upload fail");
-      setStatus("error");
-    }
+    setCount((c) => c + 1);
+    setPending((p) => p + 1);
+    setFlash(true);
+    setTimeout(() => setFlash(false), 1200);
+    // background: upload, then queue the OCR (revenue lands whenever it's ready)
+    (async () => {
+      try {
+        const { id } = await uploadParchi(file, driverId, driverName);
+        ocrQueue.current.push({ id, file });
+        pumpOcr();
+      } catch {
+        setCount((c) => Math.max(0, c - 1));
+        setPending((p) => Math.max(0, p - 1));
+        setErr("एक फोटो सेव नहीं हुई — दुबारा खींचो");
+      }
+    })();
   };
-
-  const busy = status === "uploading";
 
   return (
     <div className="w-full max-w-[390px] bg-[#101A28] rounded-3xl border-[6px] border-[#060B12] shadow-2xl overflow-hidden text-[#EAF0F8] relative">
@@ -181,24 +194,23 @@ function Capture({ driverId, driverName, onSwitch }: { driverId: string; driverN
           </div>
         </div>
 
-        {/* big camera button = hidden file input with camera capture */}
-        <label className={`w-full rounded-2xl py-8 flex flex-col items-center justify-center gap-2 cursor-pointer active:scale-[0.98] transition ${busy ? "bg-[#2A3A50]" : "bg-[#E8641B]"}`}>
-          <input type="file" accept="image/*" capture="environment" className="hidden" onChange={onPick} disabled={busy} />
+        {/* big camera button — never disabled; capture is instant */}
+        <label className="w-full rounded-2xl py-8 flex flex-col items-center justify-center gap-2 cursor-pointer active:scale-[0.98] transition bg-[#E8641B]">
+          <input type="file" accept="image/*" capture="environment" className="hidden" onChange={onPick} />
           <span className="text-[46px] leading-none">📷</span>
-          <span className="text-white font-extrabold text-[22px]">{busy ? "भेज रहे हैं…" : "पर्ची कैप्चर करो"}</span>
-          {!busy && <span className="text-white/80 text-[12px]">tap to open camera</span>}
+          <span className="text-white font-extrabold text-[22px]">पर्ची कैप्चर करो</span>
+          <span className="text-white/80 text-[12px]">tap to open camera</span>
         </label>
 
-        {/* status line */}
+        {/* status line — capture is instant; upload/OCR just hum along in the background */}
         <div className="min-h-[24px] text-center">
-          {status === "ok" && <p className="text-[15px] font-bold text-[#4CD584]">✓ जमा हो गई · saved</p>}
-          {status === "uploading" && <p className="text-[14px] text-[#8FA0B5]">अपलोड हो रहा है…</p>}
-          {status === "error" && (
-            <p className="text-[13px] font-bold text-[#FF9E9E]">✕ नहीं भेजी जा सकी — फिर से कोशिश करो<br /><span className="font-normal text-[11px] text-[#8FA0B5]">{err}</span></p>
-          )}
-          {status !== "uploading" && status !== "error" && reading === "reading" && (
-            <p className="text-[12px] text-[#8FA0B5]">पर्ची पढ़ रहे हैं… <span className="opacity-70">(कमाई जुड़ रही है)</span></p>
-          )}
+          {err ? (
+            <p className="text-[13px] font-bold text-[#FF9E9E]">✕ {err}</p>
+          ) : flash ? (
+            <p className="text-[15px] font-bold text-[#4CD584]">✓ पर्ची कैप्चर हुई</p>
+          ) : pending > 0 ? (
+            <p className="text-[12px] text-[#8FA0B5]">बैकग्राउंड में सेव हो रहा है… <span className="opacity-70">({pending})</span></p>
+          ) : null}
         </div>
 
         <p className="text-[11px] text-[#5C6B80] text-center border-t border-[#2A3A50] pt-3">
