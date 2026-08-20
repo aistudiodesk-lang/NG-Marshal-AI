@@ -14,25 +14,50 @@ export interface DeviceIdentity {
 }
 
 const KEY = "ng-marshal-identity-v1";
+const COOKIE = "ngm_id";
+const ONE_YEAR = 60 * 60 * 24 * 365;
+
+// Belt-and-suspenders persistence: keep the logged-in driver in BOTH localStorage and a
+// 1-year cookie. Some Android WebViews wipe localStorage when the app process is killed;
+// the cookie survives that (and vice-versa), so the driver never has to pick their name
+// again — reopening the app lands straight on the capture screen. Only "बदलो" clears it.
+function writeCookie(raw: string): void {
+  try { document.cookie = `${COOKIE}=${encodeURIComponent(raw)}; path=/; max-age=${ONE_YEAR}; SameSite=Lax`; } catch {}
+}
+function readCookie(): string | null {
+  try {
+    const m = document.cookie.match(new RegExp(`(?:^|; )${COOKIE}=([^;]*)`));
+    return m ? decodeURIComponent(m[1]) : null;
+  } catch { return null; }
+}
 
 export function getIdentity(): DeviceIdentity | null {
   if (typeof window === "undefined") return null;
+  let raw: string | null = null;
+  try { raw = localStorage.getItem(KEY); } catch {}
+  if (!raw) raw = readCookie(); // fall back to the cookie if localStorage was cleared
+  if (!raw) return null;
   try {
-    const raw = localStorage.getItem(KEY);
-    if (!raw) return null;
     const id = JSON.parse(raw) as DeviceIdentity;
-    return id.personId && id.role ? id : null;
+    if (!(id.personId && id.role)) return null;
+    // re-sync both stores so whichever was empty is restored
+    try { localStorage.setItem(KEY, raw); } catch {}
+    writeCookie(raw);
+    return id;
   } catch {
     return null;
   }
 }
 
 export function setIdentity(id: DeviceIdentity): void {
-  localStorage.setItem(KEY, JSON.stringify(id));
+  const raw = JSON.stringify(id);
+  try { localStorage.setItem(KEY, raw); } catch {}
+  writeCookie(raw);
 }
 
 export function clearIdentity(): void {
-  localStorage.removeItem(KEY);
+  try { localStorage.removeItem(KEY); } catch {}
+  try { document.cookie = `${COOKIE}=; path=/; max-age=0; SameSite=Lax`; } catch {}
 }
 
 export function roleHome(role: MobileRole): string {
