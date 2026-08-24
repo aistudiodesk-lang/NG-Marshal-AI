@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Wordmark } from "@/components/Brand";
 import { isValidContainer } from "@/lib/parchiOcr";
 
@@ -47,16 +47,17 @@ export default function ParchisPage() {
       const j = await res.json();
       if (!res.ok) throw new Error(j.error || "load failed");
       setFeed(j);
-      // seed editable fields from any already-extracted rows
+      // seed editable fields from any already-extracted rows. Merge (prev wins) so a
+      // background auto-refresh never wipes out fields the operator is mid-editing.
       const seed: Record<string, FieldSet> = {};
       for (const dr of j.drivers as DriverGroup[]) for (const p of dr.photos) if (p.ocr) seed[p.id] = fromOcr(p.ocr);
-      setEdits(seed);
+      setEdits((prev) => ({ ...seed, ...prev }));
     } catch (e) {
       setErr(e instanceof Error ? e.message : "load failed"); setFeed(null);
     } finally { setLoading(false); }
   }, []);
 
-  useEffect(() => { load(date); }, [date, load]);
+  useEffect(() => { setEdits({}); setRevById({}); load(date); }, [date, load]);
 
   const save = useCallback(async (id: string, fs: FieldSet, raw?: string) => {
     const fields = { ...fs, containerValid: isValidContainer(fs.containerNo) };
@@ -106,6 +107,37 @@ export default function ParchisPage() {
     }
     setBulk({ on: false, done: 0, total: 0 });
   }, [feed, edits, runOcr]);
+
+  // AUTO-OCR — the moment the feed loads, read every parchi that hasn't been read yet.
+  // No manual "OCR करो" click needed. Runs one at a time; a ref guard stops overlapping
+  // feed refreshes from double-firing. Uses server truth (p.ocr) so already-read ones skip.
+  const autoRunning = useRef(false);
+  useEffect(() => {
+    if (!feed || autoRunning.current) return;
+    const todo = feed.drivers.flatMap((d) => d.photos).filter((p) => p.url && !p.ocr && !edits[p.id]);
+    if (todo.length === 0) return;
+    autoRunning.current = true;
+    (async () => {
+      setBulk({ on: true, done: 0, total: todo.length });
+      for (let i = 0; i < todo.length; i++) {
+        await runOcr(todo[i]);
+        setBulk({ on: true, done: i + 1, total: todo.length });
+      }
+      setBulk({ on: false, done: 0, total: 0 });
+      autoRunning.current = false;
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [feed]);
+
+  // LIVE — while viewing today, quietly re-fetch every 30s so fresh uploads show up and
+  // get auto-OCR'd on their own. Skips when the tab is hidden or a read run is in flight.
+  useEffect(() => {
+    if (date !== istDate()) return;
+    const t = setInterval(() => {
+      if (!document.hidden && !autoRunning.current && !loading) load(date);
+    }, 30000);
+    return () => clearInterval(t);
+  }, [date, load, loading]);
 
   const setField = (id: string, k: keyof FieldSet, v: string) =>
     setEdits((e) => ({ ...e, [id]: { ...(e[id] ?? EMPTY), [k]: v } }));
