@@ -4,11 +4,10 @@ import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 import { Wordmark } from "@/components/Brand";
 import { isValidContainer } from "@/lib/parchiOcr";
-import { ocrImage } from "@/lib/parchiOcrClient";
 
 // Reconciliation view (for US, not drivers): per-driver parchi counts + the photos,
-// with on-demand Tesseract OCR (runs in THIS browser) to pull the container no,
-// parchi type, cycle, date, vehicle & seal. Fields are editable + saved back to the DB.
+// with on-demand server-side Gemini vision OCR to pull the container no, parchi type,
+// cycle, date, vehicle & seal. Fields are editable + saved back to the DB.
 
 interface Ocr {
   parchiType?: string | null; containerNo?: string | null; containerValid?: boolean | null;
@@ -71,24 +70,31 @@ export default function ParchisPage() {
     setTimeout(() => setSaved((s) => ({ ...s, [id]: false })), 1800);
   }, []);
 
+  // Server reads the image with Gemini vision and saves the row; we mirror the fields into
+  // the editable form so the operator can tweak + re-save (which goes through /extract).
   const runOcr = useCallback(async (photo: Photo) => {
-    if (!photo.url) return;
     setBusy((b) => ({ ...b, [photo.id]: true }));
     try {
-      const { raw, fields } = await ocrImage(photo.url);
+      const res = await fetch("/api/parchis/vision", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: photo.id }),
+      });
+      const j = await res.json();
+      if (!res.ok) throw new Error(j.error || "vision failed");
+      const f = j.fields ?? {};
       const fs: FieldSet = {
-        parchiType: fields.parchiType ?? "", containerNo: fields.containerNo ?? "", isoCode: fields.isoCode ?? "",
-        cycle: fields.cycle ?? "", docDatetime: fields.docDatetime ?? "", vehicleNo: fields.vehicleNo ?? "",
-        gatePassNo: fields.gatePassNo ?? "", sealNo: fields.sealNo ?? "", transporter: fields.transporter ?? "",
+        parchiType: f.parchiType ?? "", containerNo: f.containerNo ?? "", isoCode: f.isoCode ?? "",
+        cycle: f.cycle ?? "", docDatetime: f.docDatetime ?? "", vehicleNo: f.vehicleNo ?? "",
+        gatePassNo: f.gatePassNo ?? "", sealNo: f.sealNo ?? "", transporter: f.transporter ?? "",
       };
       setEdits((e) => ({ ...e, [photo.id]: fs }));
-      await save(photo.id, fs, raw);
+      if (typeof j.revenue === "number") setRevById((m) => ({ ...m, [photo.id]: j.revenue }));
     } catch (e) {
       setErr(`OCR fail: ${e instanceof Error ? e.message : e}`);
     } finally {
       setBusy((b) => ({ ...b, [photo.id]: false }));
     }
-  }, [save]);
+  }, []);
 
   const extractAll = useCallback(async () => {
     if (!feed) return;

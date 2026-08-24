@@ -5,7 +5,6 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useApp } from "@/lib/store";
 import { getIdentity, setIdentity, clearIdentity } from "@/lib/identity";
 import { uploadParchi, todayStats } from "@/lib/parchi";
-import { ocrFile, preloadOcr } from "@/lib/parchiOcrClient";
 import { Wordmark } from "@/components/Brand";
 
 // Dead-simple parchi collector. Two screens only:
@@ -103,8 +102,9 @@ function Login({ onLogin }: { onLogin: (d: { id: string; name: string }) => void
 
 // ── CAPTURE — the whole app. Camera + today's पर्ची count + 💰 earnings. ──────────
 // Capture is INSTANT: the tap counts immediately and the screen is ready again at once.
-// Uploading + the heavy on-phone OCR happen in the background — the driver never waits,
-// and OCR is run one-at-a-time so it can't peg a cheap phone.
+// Uploading happens in the background; the parchi is then READ on the server (Gemini vision)
+// — nothing heavy runs on the phone, so even a cheap handset stays snappy. Revenue pops
+// whenever the server finishes reading it.
 interface Reward { revenue: number; sizeFt: 20 | 40 | null }
 
 function Capture({ driverId, driverName, onSwitch }: { driverId: string; driverName: string; onSwitch: () => void }) {
@@ -115,17 +115,16 @@ function Capture({ driverId, driverName, onSwitch }: { driverId: string; driverN
   const [pending, setPending] = useState(0);                 // photos still uploading/reading
   const [err, setErr] = useState("");
 
-  // Preload the OCR engine during the calm right after login (so its ~MBs download once,
-  // up front — never competing with a capture's upload), and load today's count/earnings.
+  // Load today's count/earnings (survives app reloads).
   useEffect(() => {
-    preloadOcr();
     let live = true;
     todayStats(driverId).then((s) => { if (live) { setCount(s.count); setRevenue(s.revenue); } });
     return () => { live = false; };
   }, [driverId]);
 
-  // single-flight OCR queue — never run two OCRs at once (kills low-end phones)
-  const ocrQueue = useRef<{ id: string; file: Blob }[]>([]);
+  // single-flight read queue — ask the server to read parchis one at a time (keeps things
+  // orderly and the reward pops in capture order). The work is all server-side now.
+  const ocrQueue = useRef<{ id: string }[]>([]);
   const ocrRunning = useRef(false);
   const pumpOcr = useCallback(() => {
     if (ocrRunning.current) return;
@@ -134,10 +133,9 @@ function Capture({ driverId, driverName, onSwitch }: { driverId: string; driverN
     ocrRunning.current = true;
     (async () => {
       try {
-        const { raw, fields } = await ocrFile(job.file);
-        const res = await fetch("/api/parchis/extract", {
+        const res = await fetch("/api/parchis/vision", {
           method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ id: job.id, fields, raw }),
+          body: JSON.stringify({ id: job.id }),
         });
         const j = await res.json();
         if (j.eligible && j.revenue > 0) {
@@ -145,7 +143,7 @@ function Capture({ driverId, driverName, onSwitch }: { driverId: string; driverN
           setReward({ revenue: j.revenue, sizeFt: j.sizeFt });
           setTimeout(() => setReward(null), 2800);
         }
-      } catch { /* photo is already saved; office can fill revenue in */ }
+      } catch { /* photo is already saved; office can re-read from /parchis */ }
       finally { ocrRunning.current = false; setPending((p) => Math.max(0, p - 1)); pumpOcr(); }
     })();
   }, []);
@@ -164,7 +162,7 @@ function Capture({ driverId, driverName, onSwitch }: { driverId: string; driverN
     (async () => {
       try {
         const { id } = await uploadParchi(file, driverId, driverName);
-        ocrQueue.current.push({ id, file });
+        ocrQueue.current.push({ id });
         pumpOcr();
       } catch {
         setCount((c) => Math.max(0, c - 1));
