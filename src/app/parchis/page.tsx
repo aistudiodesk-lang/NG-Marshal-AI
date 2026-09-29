@@ -29,8 +29,69 @@ const fromOcr = (o: Ocr): FieldSet => ({
 const istDate = () => new Date().toLocaleDateString("en-CA");
 const istTime = (iso: string) => new Date(iso).toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit", timeZone: "Asia/Kolkata" });
 
+// Month calendar that highlights days with uploads (native <input type=date> can't).
+function DayPicker({ value, marks, onPick }: { value: string; marks: Record<string, number>; onPick: (d: string) => void }) {
+  const [open, setOpen] = useState(false);
+  const [month, setMonth] = useState(value.slice(0, 7));
+  useEffect(() => setMonth(value.slice(0, 7)), [value]);
+  const [y, m] = month.split("-").map(Number);
+  const lead = new Date(y, m - 1, 1).getDay();
+  const nDays = new Date(y, m, 0).getDate();
+  const shift = (n: number) => {
+    const d = new Date(y, m - 1 + n, 1);
+    setMonth(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`);
+  };
+  const today = istDate();
+  const label = value ? value.split("-").reverse().join("-") : "…";
+
+  return (
+    <div className="relative">
+      <button onClick={() => setOpen((o) => !o)}
+        className="bg-white border border-[#CBD5E3] rounded-lg px-3 py-2 text-[14px] font-semibold">📅 {label}</button>
+      {open && (
+        <>
+          <div className="fixed inset-0 z-20" onClick={() => setOpen(false)} />
+          <div className="absolute z-30 mt-1 bg-white border border-[#CBD5E3] rounded-lg shadow-lg p-3 w-[280px]">
+            <div className="flex items-center justify-between mb-2">
+              <button onClick={() => shift(-1)} className="px-2 text-[18px]">‹</button>
+              <span className="font-bold text-[14px]">
+                {new Date(y, m - 1, 1).toLocaleDateString("en-IN", { month: "long", year: "numeric" })}
+              </span>
+              <button onClick={() => shift(1)} className="px-2 text-[18px]">›</button>
+            </div>
+            <div className="grid grid-cols-7 gap-1 text-center text-[11px] text-[#6B7A90] mb-1">
+              {["Su", "Mo", "Tu", "We", "Th", "Fr", "Sa"].map((d) => <span key={d}>{d}</span>)}
+            </div>
+            <div className="grid grid-cols-7 gap-1">
+              {Array.from({ length: lead }, (_, i) => <span key={`b${i}`} />)}
+              {Array.from({ length: nDays }, (_, i) => {
+                const d = `${month}-${String(i + 1).padStart(2, "0")}`;
+                const n = marks[d];
+                const sel = d === value;
+                return (
+                  <button key={d} onClick={() => { onPick(d); setOpen(false); }} title={n ? `${n} पर्ची` : undefined}
+                    className={`relative h-9 rounded-md text-[13px] font-semibold ${sel ? "bg-[#2E5395] text-white"
+                      : n ? "bg-[#D6F2E2] text-[#12703E] hover:bg-[#BDE8CF]" : "hover:bg-[#EDF0F4]"}
+                      ${d === today && !sel ? "ring-1 ring-[#2E5395]" : ""}`}>
+                    {i + 1}
+                    {n ? <span className={`absolute -top-1 -right-1 text-[9px] leading-none rounded-full px-1 py-0.5 ${sel ? "bg-white text-[#2E5395]" : "bg-[#1E9E5A] text-white"}`}>{n}</span> : null}
+                  </button>
+                );
+              })}
+            </div>
+            <p className="mt-2 text-[11px] text-[#6B7A90]">🟩 = पर्ची अपलोड हुई (संख्या ऊपर)</p>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
 export default function ParchisPage() {
-  const [date, setDate] = useState(istDate());
+  // "" on the server; set to the real today after mount so a prerendered build date never sticks
+  const [date, setDate] = useState("");
+  const [marks, setMarks] = useState<Record<string, number>>({});
+  useEffect(() => { setDate(istDate()); }, []);
   const [feed, setFeed] = useState<Feed | null>(null);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState("");
@@ -47,6 +108,7 @@ export default function ParchisPage() {
       const j = await res.json();
       if (!res.ok) throw new Error(j.error || "load failed");
       setFeed(j);
+      fetch("/api/parchis?days=1", { cache: "no-store" }).then((r) => r.json()).then((x) => x.days && setMarks(x.days)).catch(() => {});
       // seed editable fields from any already-extracted rows. Merge (prev wins) so a
       // background auto-refresh never wipes out fields the operator is mid-editing.
       const seed: Record<string, FieldSet> = {};
@@ -57,7 +119,7 @@ export default function ParchisPage() {
     } finally { setLoading(false); }
   }, []);
 
-  useEffect(() => { setEdits({}); setRevById({}); load(date); }, [date, load]);
+  useEffect(() => { if (!date) return; setEdits({}); setRevById({}); load(date); }, [date, load]);
 
   const save = useCallback(async (id: string, fs: FieldSet, raw?: string) => {
     const fields = { ...fs, containerValid: isValidContainer(fs.containerNo) };
@@ -153,8 +215,7 @@ export default function ParchisPage() {
 
       <div className="max-w-[1000px] mx-auto p-4 flex flex-col gap-4">
         <div className="flex items-center gap-3 flex-wrap">
-          <input type="date" value={date} max={istDate()} onChange={(e) => setDate(e.target.value)}
-            className="bg-white border border-[#CBD5E3] rounded-lg px-3 py-2 text-[14px] font-semibold" />
+          <DayPicker value={date} marks={marks} onPick={setDate} />
           <button onClick={() => load(date)} className="bg-[#2E5395] text-white rounded-lg px-4 py-2 text-[13px] font-bold active:scale-[0.98]">
             {loading ? "…" : "↻ ताज़ा"}
           </button>

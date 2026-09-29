@@ -18,10 +18,24 @@ interface Row {
 }
 
 export async function GET(req: NextRequest) {
-  const date = new URL(req.url).searchParams.get("date") || istToday();
+  const params = new URL(req.url).searchParams;
+  const date = params.get("date") || istToday();
   const sb = createClient(process.env.NEXT_PUBLIC_SUPABASE_URL!, process.env.SUPABASE_SERVICE_ROLE_KEY!, {
     auth: { persistSession: false },
   });
+
+  // ?days=1 → { "YYYY-MM-DD": count } of every IST day that has uploads (calendar highlights)
+  // ponytail: scans all captured_at rows (range capped at 10k); move to a GROUP BY view if the table outgrows that
+  if (params.has("days")) {
+    const { data, error } = await sb.from("parchi_photos").select("captured_at").range(0, 9999);
+    if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+    const days: Record<string, number> = {};
+    for (const r of data ?? []) {
+      const d = new Date(new Date(r.captured_at).getTime() + 5.5 * 3600 * 1000).toISOString().slice(0, 10);
+      days[d] = (days[d] ?? 0) + 1;
+    }
+    return NextResponse.json({ days });
+  }
 
   // IST calendar day → UTC-aware bounds (captured_at is timestamptz)
   const { data, error } = await sb
