@@ -82,23 +82,22 @@ export async function todayStats(driverId: string): Promise<{ count: number; tri
   };
 }
 
-/** Trips per local day for the last `days` days (newest first, zero-days included). */
-export async function tripHistory(driverId: string, days = 7): Promise<{ date: string; trips: number }[]> {
-  const start = new Date();
-  start.setHours(0, 0, 0, 0);
-  start.setDate(start.getDate() - (days - 1));
+/** Trips per local day from `from` to `to` (YYYY-MM-DD, inclusive), newest first, zero-days included. */
+export async function tripHistory(driverId: string, from: string, to: string): Promise<{ date: string; trips: number }[]> {
+  const start = new Date(from + "T00:00");
+  const end = new Date(to + "T00:00");
+  end.setDate(end.getDate() + 1);
   const { data } = await sb()
     .from("parchi_photos")
     .select("captured_at")
     .eq("driver_id", driverId)
     .eq("revenue_eligible", true)
-    .gte("captured_at", start.toISOString());
+    .gte("captured_at", start.toISOString())
+    .lt("captured_at", end.toISOString());
   const key = (d: Date) => d.toLocaleDateString("en-CA");
   const counts: Record<string, number> = {};
   for (const r of data ?? []) counts[key(new Date(r.captured_at))] = (counts[key(new Date(r.captured_at))] ?? 0) + 1;
-  return Array.from({ length: days }, (_, i) => {
-    const d = new Date();
-    d.setDate(d.getDate() - i);
-    return { date: key(d), trips: counts[key(d)] ?? 0 };
-  });
+  const out: { date: string; trips: number }[] = [];
+  for (const d = new Date(to + "T00:00"); d >= start; d.setDate(d.getDate() - 1)) out.push({ date: key(d), trips: counts[key(d)] ?? 0 });
+  return out;
 }

@@ -121,7 +121,9 @@ function Capture({ driverId, driverName, onSwitch }: { driverId: string; driverN
   const [count, setCount] = useState(0);
   const [revenue, setRevenue] = useState(0);
   const [trips, setTrips] = useState(0);
-  const [history, setHistory] = useState<{ date: string; trips: number }[]>([]);
+  const [history, setHistory] = useState<{ date: string; trips: number }[]>([]); // this month so far, newest first
+  const [pick, setPick] = useState("");                                            // date filter ("" = month view)
+  const [picked, setPicked] = useState<number | null>(null);
   const [reward, setReward] = useState<Reward | null>(null); // celebration overlay
   const [flash, setFlash] = useState(false);                 // brief "captured ✓"
   const [pending, setPending] = useState(0);                 // photos still uploading/reading
@@ -131,9 +133,19 @@ function Capture({ driverId, driverName, onSwitch }: { driverId: string; driverN
   useEffect(() => {
     let live = true;
     todayStats(driverId).then((s) => { if (live) { setCount(s.count); setTrips(s.trips); setRevenue(s.revenue); } });
-    tripHistory(driverId).then((h) => { if (live) setHistory(h); });
+    const today = new Date().toLocaleDateString("en-CA");
+    tripHistory(driverId, today.slice(0, 8) + "01", today).then((h) => { if (live) setHistory(h); });
     return () => { live = false; };
   }, [driverId]);
+
+  // date filter → that day's trip count
+  useEffect(() => {
+    if (!pick) return;
+    setPicked(null);
+    let live = true;
+    tripHistory(driverId, pick, pick).then((h) => { if (live) setPicked(h[0]?.trips ?? 0); });
+    return () => { live = false; };
+  }, [driverId, pick]);
 
   // single-flight read queue — ask the server to read parchis one at a time (keeps things
   // orderly and the reward pops in capture order). The work is all server-side now.
@@ -235,13 +247,37 @@ function Capture({ driverId, driverName, onSwitch }: { driverId: string; driverN
 
         {!SHOW_DRIVER_REVENUE && history.length > 0 && (
           <div className="bg-[#0B1420] rounded-2xl border border-[#2A3A50] px-4 py-3">
-            <p className="text-[11px] text-[#8FA0B5] mb-2">पिछले 7 दिन की ट्रिप</p>
-            {history.map((d, i) => (
-              <div key={d.date} className="flex justify-between text-[13px] py-0.5">
-                <span className="text-[#B9C6DE]">{i === 0 ? "आज" : new Date(d.date + "T00:00").toLocaleDateString("hi-IN", { day: "numeric", month: "short", weekday: "short" })}</span>
-                <span className={`font-bold tabular-nums ${d.trips ? "text-[#4CD584]" : "text-[#5C6B80]"}`}>{d.trips} ट्रिप</span>
+            <div className="flex justify-between items-baseline mb-2">
+              <p className="text-[12px] text-[#8FA0B5]">
+                {new Date().toLocaleDateString("hi-IN", { month: "long" })} की ट्रिप
+              </p>
+              <p className="text-[18px] font-extrabold text-[#4CD584] tabular-nums">
+                कुल {history.reduce((a, d) => a + d.trips, 0)}
+              </p>
+            </div>
+
+            {/* date filter */}
+            <div className="flex gap-2 items-center mb-2">
+              <input type="date" value={pick} max={history[0].date} onChange={(e) => setPick(e.target.value)}
+                className="flex-1 bg-[#101A28] border border-[#2A3A50] rounded-lg px-2 py-1.5 text-[13px] text-[#EAF0F8] [color-scheme:dark]" />
+              {pick && <button onClick={() => setPick("")} className="text-[12px] text-[#8FA0B5] border border-[#2A3A50] rounded-lg px-2.5 py-1.5">✕ पूरा महीना</button>}
+            </div>
+
+            {pick ? (
+              <div className="flex justify-between text-[15px] py-2 border-t border-[#2A3A50]">
+                <span className="text-[#B9C6DE]">{new Date(pick + "T00:00").toLocaleDateString("hi-IN", { day: "numeric", month: "long", weekday: "short" })}</span>
+                <span className="font-extrabold tabular-nums text-[#4CD584]">{picked === null ? "…" : `${picked} ट्रिप`}</span>
               </div>
-            ))}
+            ) : (
+              <div className="max-h-[260px] overflow-y-auto border-t border-[#2A3A50] pt-1">
+                {history.map((d, i) => (
+                  <div key={d.date} className="flex justify-between text-[13px] py-0.5">
+                    <span className="text-[#B9C6DE]">{i === 0 ? "आज" : new Date(d.date + "T00:00").toLocaleDateString("hi-IN", { day: "numeric", month: "short", weekday: "short" })}</span>
+                    <span className={`font-bold tabular-nums ${d.trips ? "text-[#4CD584]" : "text-[#5C6B80]"}`}>{d.trips} ट्रिप</span>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         )}
 
