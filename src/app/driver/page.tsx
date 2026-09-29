@@ -69,7 +69,12 @@ export default function DriverPage() {
 function Login({ onLogin }: { onLogin: (d: { id: string; name: string }) => void }) {
   const { state } = useApp();
   const [driverId, setDriverId] = useState("");
-  const drivers = state.drivers;
+  // tiny roster from /api/drivers — don't wait on the multi-MB store load (seed list shows till then)
+  const [roster, setRoster] = useState<{ id: string; name: string; nameHi: string }[] | null>(null);
+  useEffect(() => {
+    fetch("/api/drivers", { cache: "no-store" }).then((r) => r.json()).then((j) => j.drivers?.length && setRoster(j.drivers)).catch(() => {});
+  }, []);
+  const drivers = roster ?? state.drivers;
 
   const start = () => {
     const d = drivers.find((x) => x.id === driverId);
