@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useApp } from "@/lib/store";
 import { getIdentity, setIdentity, clearIdentity } from "@/lib/identity";
-import { uploadParchi, todayStats } from "@/lib/parchi";
+import { uploadParchi, todayStats, tripHistory } from "@/lib/parchi";
 import { Wordmark } from "@/components/Brand";
 
 // Dead-simple parchi collector. Two screens only:
@@ -12,6 +12,11 @@ import { Wordmark } from "@/components/Brand";
 //   2) CAPTURE — one big camera button. Snap → upload → counter ticks up. Repeat.
 // The camera is a plain <input capture> so it works inside the existing Capacitor
 // WebView with NO native plugin and NO APK rebuild.
+
+// Drivers see TRIPS only (trip = gate-in parchi, same rule as revenue in lib/revenue.ts).
+// Revenue is still computed + stored server-side and shown to the office on /dashboard.
+// Flip to true to bring the ₹ tile + celebration popup back for drivers.
+const SHOW_DRIVER_REVENUE = false;
 
 // small dark select
 function Sel({ value, onChange, children, className = "" }: { value: string; onChange: (v: string) => void; children: React.ReactNode; className?: string }) {
@@ -110,6 +115,8 @@ interface Reward { revenue: number; sizeFt: 20 | 40 | null }
 function Capture({ driverId, driverName, onSwitch }: { driverId: string; driverName: string; onSwitch: () => void }) {
   const [count, setCount] = useState(0);
   const [revenue, setRevenue] = useState(0);
+  const [trips, setTrips] = useState(0);
+  const [history, setHistory] = useState<{ date: string; trips: number }[]>([]);
   const [reward, setReward] = useState<Reward | null>(null); // celebration overlay
   const [flash, setFlash] = useState(false);                 // brief "captured ✓"
   const [pending, setPending] = useState(0);                 // photos still uploading/reading
@@ -118,7 +125,8 @@ function Capture({ driverId, driverName, onSwitch }: { driverId: string; driverN
   // Load today's count/earnings (survives app reloads).
   useEffect(() => {
     let live = true;
-    todayStats(driverId).then((s) => { if (live) { setCount(s.count); setRevenue(s.revenue); } });
+    todayStats(driverId).then((s) => { if (live) { setCount(s.count); setTrips(s.trips); setRevenue(s.revenue); } });
+    tripHistory(driverId).then((h) => { if (live) setHistory(h); });
     return () => { live = false; };
   }, [driverId]);
 
@@ -138,8 +146,10 @@ function Capture({ driverId, driverName, onSwitch }: { driverId: string; driverN
           body: JSON.stringify({ id: job.id }),
         });
         const j = await res.json();
-        if (j.eligible && j.revenue > 0) {
-          setRevenue((r) => r + j.revenue);
+        if (j.eligible) {
+          setTrips((t) => t + 1);
+          setHistory((h) => h.map((d, i) => (i === 0 ? { ...d, trips: d.trips + 1 } : d)));
+          if (j.revenue > 0) setRevenue((r) => r + j.revenue);
           setReward({ revenue: j.revenue, sizeFt: j.sizeFt });
           setTimeout(() => setReward(null), 2800);
         }
@@ -186,10 +196,17 @@ function Capture({ driverId, driverName, onSwitch }: { driverId: string; driverN
             <p className="text-[11px] text-[#8FA0B5]">आज पर्ची</p>
             <p className="text-[40px] font-extrabold leading-none tabular-nums text-[#4CD584]">{count}</p>
           </div>
-          <div className="text-center bg-[#0B1420] rounded-2xl py-3 border border-[#2A3A50]">
-            <p className="text-[11px] text-[#8FA0B5]">💰 आज कमाई</p>
-            <p className="text-[40px] font-extrabold leading-none tabular-nums text-[#FFC85C]">₹{revenue}</p>
-          </div>
+          {SHOW_DRIVER_REVENUE ? (
+            <div className="text-center bg-[#0B1420] rounded-2xl py-3 border border-[#2A3A50]">
+              <p className="text-[11px] text-[#8FA0B5]">💰 आज कमाई</p>
+              <p className="text-[40px] font-extrabold leading-none tabular-nums text-[#FFC85C]">₹{revenue}</p>
+            </div>
+          ) : (
+            <div className="text-center bg-[#0B1420] rounded-2xl py-3 border border-[#2A3A50]">
+              <p className="text-[11px] text-[#8FA0B5]">🚛 आज ट्रिप</p>
+              <p className="text-[40px] font-extrabold leading-none tabular-nums text-[#FFC85C]">{trips}</p>
+            </div>
+          )}
         </div>
 
         {/* big camera button — never disabled; capture is instant */}
@@ -211,18 +228,40 @@ function Capture({ driverId, driverName, onSwitch }: { driverId: string; driverN
           ) : null}
         </div>
 
+        {!SHOW_DRIVER_REVENUE && history.length > 0 && (
+          <div className="bg-[#0B1420] rounded-2xl border border-[#2A3A50] px-4 py-3">
+            <p className="text-[11px] text-[#8FA0B5] mb-2">पिछले 7 दिन की ट्रिप</p>
+            {history.map((d, i) => (
+              <div key={d.date} className="flex justify-between text-[13px] py-0.5">
+                <span className="text-[#B9C6DE]">{i === 0 ? "आज" : new Date(d.date + "T00:00").toLocaleDateString("hi-IN", { day: "numeric", month: "short", weekday: "short" })}</span>
+                <span className={`font-bold tabular-nums ${d.trips ? "text-[#4CD584]" : "text-[#5C6B80]"}`}>{d.trips} ट्रिप</span>
+              </div>
+            ))}
+          </div>
+        )}
+
         <p className="text-[11px] text-[#5C6B80] text-center border-t border-[#2A3A50] pt-3">
           हर पर्ची की एक फोटो खींचो · take one photo per parchi
         </p>
       </div>
 
       {/* 🎉 revenue celebration overlay */}
-      {reward && (
+      {reward && SHOW_DRIVER_REVENUE && (
         <div className="absolute inset-0 z-20 bg-[#0A2A18]/97 flex flex-col items-center justify-center gap-2 text-center animate-[fadeIn_0.15s_ease-out]">
           <span className="text-[60px] leading-none">🎉</span>
           <p className="text-[16px] text-[#BDF0D2] font-bold">कमाई जुड़ी!</p>
           <p className="text-[64px] font-extrabold leading-none text-[#FFC85C]">₹{reward.revenue}</p>
           <p className="text-[15px] text-[#BDF0D2] font-semibold">{reward.sizeFt ? `${reward.sizeFt}ft container` : ""} · gate-in ✓</p>
+          <p className="text-[13px] text-[#7FBF9C] mt-1">अगली पर्ची कैप्चर करो →</p>
+        </div>
+      )}
+
+      {/* trips-only mode: brief "trip counted" popup instead of ₹ */}
+      {reward && !SHOW_DRIVER_REVENUE && (
+        <div className="absolute inset-0 z-20 bg-[#0A2A18]/97 flex flex-col items-center justify-center gap-2 text-center animate-[fadeIn_0.15s_ease-out]">
+          <span className="text-[60px] leading-none">🚛</span>
+          <p className="text-[22px] text-[#BDF0D2] font-extrabold">ट्रिप दर्ज ✓</p>
+          <p className="text-[15px] text-[#BDF0D2] font-semibold">आज कुल {trips} ट्रिप</p>
           <p className="text-[13px] text-[#7FBF9C] mt-1">अगली पर्ची कैप्चर करो →</p>
         </div>
       )}

@@ -65,15 +65,40 @@ export async function uploadParchi(file: File, driverId: string, driverName: str
   return { id: data.id as string, path };
 }
 
-/** Today's parchi count + total revenue for this driver — survives app reloads. */
-export async function todayStats(driverId: string): Promise<{ count: number; revenue: number }> {
+/** Today's parchi count, trips (gate-in = revenue-eligible) + revenue for this driver — survives app reloads. */
+export async function todayStats(driverId: string): Promise<{ count: number; trips: number; revenue: number }> {
   const start = new Date();
   start.setHours(0, 0, 0, 0);
   const { data, error } = await sb()
     .from("parchi_photos")
-    .select("revenue")
+    .select("revenue,revenue_eligible")
     .eq("driver_id", driverId)
     .gte("captured_at", start.toISOString());
-  if (error || !data) return { count: 0, revenue: 0 };
-  return { count: data.length, revenue: data.reduce((a, r) => a + (r.revenue || 0), 0) };
+  if (error || !data) return { count: 0, trips: 0, revenue: 0 };
+  return {
+    count: data.length,
+    trips: data.filter((r) => r.revenue_eligible).length,
+    revenue: data.reduce((a, r) => a + (r.revenue || 0), 0),
+  };
+}
+
+/** Trips per local day for the last `days` days (newest first, zero-days included). */
+export async function tripHistory(driverId: string, days = 7): Promise<{ date: string; trips: number }[]> {
+  const start = new Date();
+  start.setHours(0, 0, 0, 0);
+  start.setDate(start.getDate() - (days - 1));
+  const { data } = await sb()
+    .from("parchi_photos")
+    .select("captured_at")
+    .eq("driver_id", driverId)
+    .eq("revenue_eligible", true)
+    .gte("captured_at", start.toISOString());
+  const key = (d: Date) => d.toLocaleDateString("en-CA");
+  const counts: Record<string, number> = {};
+  for (const r of data ?? []) counts[key(new Date(r.captured_at))] = (counts[key(new Date(r.captured_at))] ?? 0) + 1;
+  return Array.from({ length: days }, (_, i) => {
+    const d = new Date();
+    d.setDate(d.getDate() - i);
+    return { date: key(d), trips: counts[key(d)] ?? 0 };
+  });
 }
