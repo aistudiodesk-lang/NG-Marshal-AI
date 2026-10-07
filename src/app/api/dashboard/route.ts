@@ -21,7 +21,7 @@ export async function GET(req: NextRequest) {
   // ponytail: one query capped at 10k rows; paginate if a range ever holds more
   let q = sb
     .from("parchi_photos")
-    .select("id,driver_id,driver_name,captured_at,parchi_type,container_no,container_valid,iso_code,size_ft,gate_pass_no,cycle,doc_datetime,vehicle_no,seal_no,transporter,revenue,revenue_eligible,ocr_at")
+    .select("id,driver_id,driver_name,captured_at,parchi_type,container_no,container_valid,iso_code,size_ft,gate_pass_no,cycle,doc_datetime,vehicle_no,seal_no,transporter,revenue,revenue_eligible,ocr_at,storage_path,approval_status,approved_by,approved_at")
     .gte("captured_at", `${from}T00:00:00+05:30`)
     .lte("captured_at", `${to}T23:59:59+05:30`)
     .order("captured_at", { ascending: false })
@@ -36,5 +36,14 @@ export async function GET(req: NextRequest) {
     .map(([id, name]) => ({ id, name }))
     .sort((a, b) => a.name.localeCompare(b.name));
 
-  return NextResponse.json({ from, to, rows: data ?? [], drivers });
+  // short-lived signed photo URLs (private bucket) for the Approvals viewer
+  const rows = data ?? [];
+  const urls = new Map<string, string>();
+  for (let i = 0; i < rows.length; i += 500) {
+    const { data: signed } = await sb.storage.from("parchis").createSignedUrls(rows.slice(i, i + 500).map((r) => r.storage_path), 3600);
+    for (const u of signed ?? []) if (u.signedUrl && u.path) urls.set(u.path, u.signedUrl);
+  }
+  const out = rows.map(({ storage_path, ...r }) => ({ ...r, url: urls.get(storage_path) ?? null }));
+
+  return NextResponse.json({ from, to, rows: out, drivers });
 }

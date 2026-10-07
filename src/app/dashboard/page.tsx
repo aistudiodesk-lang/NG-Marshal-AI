@@ -4,29 +4,24 @@ import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { Wordmark } from "@/components/Brand";
 
-// Office dashboard: trips per driver over a date range + every parchi's extracted
-// details (no photos). Trip = gate-in parchi (revenue_eligible), same rule as lib/revenue.ts.
+import Approvals from "./Approvals";
+import { Approval, Row, STATUS, cycleOf, istDT } from "./shared";
 
-interface Row {
-  id: string; driver_id: string; driver_name: string; captured_at: string;
-  parchi_type: string | null; container_no: string | null; container_valid: boolean | null;
-  iso_code: string | null; size_ft: number | null; gate_pass_no: string | null; cycle: string | null;
-  doc_datetime: string | null; vehicle_no: string | null; seal_no: string | null; transporter: string | null;
-  revenue: number | null; revenue_eligible: boolean | null; ocr_at: string | null;
-}
+// Office dashboard: Overview (trips per driver + parchi details, CSV) and Approvals
+// (evaluator ticks each photo daily). Trip = APPROVED gate-in parchi (revenue_eligible
+// + approval_status='approved'); pending gate-ins are shown separately.
 
 const ymd = (d: Date) => d.toLocaleDateString("en-CA");
 const shiftDays = (n: number) => { const d = new Date(); d.setDate(d.getDate() + n); return ymd(d); };
-const istDT = (iso: string) => new Date(iso).toLocaleString("en-IN", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit", timeZone: "Asia/Kolkata" });
-const cycleOf = (r: Row) => { const c = (r.cycle || r.parchi_type || "").toUpperCase(); return c.includes("IMP") ? "IMPORT" : c.includes("EXP") ? "EXPORT" : ""; };
 
-type Show = "trips" | "all" | "other";
+type Show = "approved" | "trips" | "all" | "other";
 
 export default function DashboardPage() {
   const [from, setFrom] = useState("");
   const [to, setTo] = useState("");
   const [driver, setDriver] = useState("");
-  const [show, setShow] = useState<Show>("trips");
+  const [show, setShow] = useState<Show>("approved");
+  const [tab, setTab] = useState<"overview" | "approvals">("overview");
   const [search, setSearch] = useState("");
   const [rows, setRows] = useState<Row[]>([]);
   const [drivers, setDrivers] = useState<{ id: string; name: string }[]>([]);
@@ -48,9 +43,27 @@ export default function DashboardPage() {
   }, [from, to, driver]);
 
   const preset = (a: number, b: number) => { setFrom(shiftDays(a)); setTo(shiftDays(b)); };
+  // optimistic: update rows now, revert on API failure
+  const setApproval = async (ids: string[], status: Approval, by: string) => {
+    const before = new Map(rows.filter((r) => ids.includes(r.id)).map((r) => [r.id, r]));
+    const now = new Date().toISOString();
+    setRows((rs) => rs.map((r) => (ids.includes(r.id)
+      ? { ...r, approval_status: status, approved_by: status === "pending" ? null : by, approved_at: status === "pending" ? null : now } : r)));
+    try {
+      const res = await fetch("/api/parchis/approve", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ids, status, by }) });
+      if (!res.ok) throw new Error((await res.json()).error || "save failed");
+      setErr("");
+    } catch (e) {
+      setRows((rs) => rs.map((r) => before.get(r.id) ?? r));
+      setErr(`Approval not saved — ${e instanceof Error ? e.message : "error"}`);
+    }
+  };
+
   const thisMonth = () => { const d = new Date(); setFrom(ymd(new Date(d.getFullYear(), d.getMonth(), 1))); setTo(ymd(d)); };
 
-  const trips = rows.filter((r) => r.revenue_eligible);
+  const approved = (r: Row) => r.approval_status === "approved";
+  const trips = rows.filter((r) => r.revenue_eligible && approved(r));
+  const awaiting = rows.filter((r) => r.revenue_eligible && r.approval_status === "pending").length;
   const stats = {
     trips: trips.length,
     parchis: rows.length,
@@ -59,18 +72,20 @@ export default function DashboardPage() {
     ft40: trips.filter((r) => r.size_ft === 40).length,
     imp: trips.filter((r) => cycleOf(r) === "IMPORT").length,
     exp: trips.filter((r) => cycleOf(r) === "EXPORT").length,
-    revenue: rows.reduce((a, r) => a + (r.revenue || 0), 0),
+    revenue: trips.reduce((a, r) => a + (r.revenue || 0), 0),
     unread: rows.filter((r) => !r.ocr_at).length,
   };
 
   const perDriver = useMemo(() => {
-    const m = new Map<string, { id: string; name: string; trips: number; parchis: number; ft20: number; ft40: number; imp: number; exp: number; revenue: number; days: Set<string> }>();
+    const m = new Map<string, { id: string; name: string; trips: number; pending: number; parchis: number; ft20: number; ft40: number; imp: number; exp: number; revenue: number; days: Set<string> }>();
     for (const r of rows) {
-      if (!m.has(r.driver_id)) m.set(r.driver_id, { id: r.driver_id, name: r.driver_name, trips: 0, parchis: 0, ft20: 0, ft40: 0, imp: 0, exp: 0, revenue: 0, days: new Set() });
+      if (!m.has(r.driver_id)) m.set(r.driver_id, { id: r.driver_id, name: r.driver_name, trips: 0, pending: 0, parchis: 0, ft20: 0, ft40: 0, imp: 0, exp: 0, revenue: 0, days: new Set() });
       const g = m.get(r.driver_id)!;
       g.parchis++;
-      g.revenue += r.revenue || 0;
       if (!r.revenue_eligible) continue;
+      if (r.approval_status === "pending") g.pending++;
+      if (!approved(r)) continue;
+      g.revenue += r.revenue || 0;
       g.trips++;
       g.days.add(new Date(r.captured_at).toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" }));
       if (r.size_ft === 20) g.ft20++;
@@ -84,7 +99,7 @@ export default function DashboardPage() {
   const detail = useMemo(() => {
     const s = search.trim().toUpperCase();
     return rows.filter((r) =>
-      (show === "all" || (show === "trips" ? r.revenue_eligible : !r.revenue_eligible)) &&
+      (show === "all" || (show === "approved" ? r.revenue_eligible && approved(r) : show === "trips" ? r.revenue_eligible : !r.revenue_eligible)) &&
       (!s || [r.container_no, r.vehicle_no, r.gate_pass_no, r.seal_no, r.transporter].some((v) => (v || "").toUpperCase().includes(s))));
   }, [rows, show, search]);
 
@@ -103,6 +118,7 @@ export default function DashboardPage() {
     ["Transporter", (r) => r.transporter || ""],
     ["Doc date", (r) => r.doc_datetime || ""],
     ["₹", (r) => r.revenue ?? 0],
+    ["Status", (r) => `${STATUS[r.approval_status].icon} ${STATUS[r.approval_status].label}${r.approved_by ? " · " + r.approved_by : ""}`],
   ];
 
   const exportCsv = () => {
@@ -131,6 +147,19 @@ export default function DashboardPage() {
       </header>
 
       <div className="max-w-[1200px] mx-auto p-4 flex flex-col gap-4">
+        {/* tabs */}
+        <div className="flex gap-2">
+          {([["overview", "📊 Overview"], ["approvals", "✅ Approvals"]] as const).map(([k, label]) => (
+            <button key={k} onClick={() => setTab(k)}
+              className={`rounded-lg px-4 py-2 text-[13px] font-bold border ${tab === k ? "bg-[#16243A] text-white border-[#16243A]" : "bg-white border-[#CBD5E3] hover:bg-[#F4F6F9]"}`}>
+              {label}
+              {k === "approvals" && awaiting > 0 && (
+                <span className="ml-2 rounded-full px-2 py-0.5 text-[11px] tabular-nums" style={{ background: STATUS.pending.tint, color: STATUS.pending.ink }}>⏳{awaiting}</span>
+              )}
+            </button>
+          ))}
+        </div>
+
         {/* filters */}
         <div className="bg-white rounded-xl border border-[#D7DEE8] p-3 flex flex-wrap items-end gap-3">
           <label className="text-[11px] font-semibold text-[#6B7A90] flex flex-col gap-1">From
@@ -156,9 +185,12 @@ export default function DashboardPage() {
 
         {err && <p className="text-[#C0392B] font-semibold text-[13px]">✕ {err}</p>}
 
+        {tab === "approvals" ? <Approvals rows={rows} from={from} to={to} onSet={setApproval} /> : (<>
+
         {/* summary cards */}
-        <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-3">
-          <Card label="🚛 Trips (gate-in)" value={stats.trips} tone="#1E9E5A" />
+        <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-3">
+          <Card label="🚛 Trips (approved)" value={stats.trips} tone="#1E9E5A" />
+          <Card label="⏳ Awaiting approval" value={awaiting} tone={awaiting ? STATUS.pending.ink : "#16243A"} />
           <Card label="Drivers active" value={stats.drivers} />
           <Card label="20ft / 40ft" value={`${stats.ft20} / ${stats.ft40}`} />
           <Card label="Import / Export" value={`${stats.imp} / ${stats.exp}`} />
@@ -172,14 +204,15 @@ export default function DashboardPage() {
           <h2 className="px-4 pt-3 pb-2 text-[14px] font-extrabold">Driver summary</h2>
           <table className="w-full text-[13px]">
             <thead className="bg-[#F4F6F9] text-[#6B7A90] text-[11px] uppercase">
-              <tr>{["Driver", "Trips", "Days worked", "Avg/day", "20ft", "40ft", "Import", "Export", "All parchis", "Revenue"].map((h) => <th key={h} className="px-3 py-2 text-left font-bold">{h}</th>)}</tr>
+              <tr>{["Driver", "Trips ✅", "⏳ Pending", "Days worked", "Avg/day", "20ft", "40ft", "Import", "Export", "All parchis", "Revenue"].map((h) => <th key={h} className="px-3 py-2 text-left font-bold">{h}</th>)}</tr>
             </thead>
             <tbody>
-              {perDriver.length === 0 && <tr><td colSpan={10} className="px-3 py-6 text-center text-[#6B7A90]">इस रेंज में कोई पर्ची नहीं</td></tr>}
+              {perDriver.length === 0 && <tr><td colSpan={11} className="px-3 py-6 text-center text-[#6B7A90]">इस रेंज में कोई पर्ची नहीं</td></tr>}
               {perDriver.map((d) => (
                 <tr key={d.id} onClick={() => setDriver(driver === d.id ? "" : d.id)} className="border-t border-[#EDF0F4] hover:bg-[#F8FAFC] cursor-pointer">
                   <td className="px-3 py-2 font-bold">{d.name}</td>
                   <td className="px-3 py-2 font-extrabold text-[#1E9E5A] tabular-nums">{d.trips}</td>
+                  <td className="px-3 py-2 tabular-nums" style={{ color: d.pending ? STATUS.pending.ink : undefined }}>{d.pending}</td>
                   <td className="px-3 py-2 tabular-nums">{d.days.size}</td>
                   <td className="px-3 py-2 tabular-nums">{d.days.size ? (d.trips / d.days.size).toFixed(1) : "—"}</td>
                   <td className="px-3 py-2 tabular-nums">{d.ft20}</td>
@@ -199,7 +232,8 @@ export default function DashboardPage() {
           <div className="px-4 pt-3 pb-2 flex flex-wrap items-center gap-2">
             <h2 className="text-[14px] font-extrabold mr-auto">Trip details <span className="text-[#6B7A90] font-semibold">({detail.length})</span></h2>
             <select value={show} onChange={(e) => setShow(e.target.value as Show)} className="border border-[#CBD5E3] rounded-lg px-2 py-1.5 text-[12px]">
-              <option value="trips">Trips only (gate-in)</option>
+              <option value="approved">✅ Approved trips</option>
+              <option value="trips">All gate-in (any status)</option>
               <option value="all">All parchis</option>
               <option value="other">Non-trip parchis</option>
             </select>
@@ -222,6 +256,7 @@ export default function DashboardPage() {
             </tbody>
           </table>
         </section>
+        </>)}
       </div>
     </main>
   );
