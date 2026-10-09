@@ -5,7 +5,8 @@ import { useEffect, useMemo, useState } from "react";
 import { Wordmark } from "@/components/Brand";
 
 import Approvals from "./Approvals";
-import { Approval, Row, STATUS, cycleOf, istDT } from "./shared";
+import { Approval, ManualEntry, Row, STATUS, cycleOf, istDT, manualAsRow } from "./shared";
+import DayPicker, { useUploadDays } from "@/components/DayPicker";
 
 // Office dashboard: Overview (trips per driver + parchi details, CSV) and Approvals
 // (evaluator ticks each photo daily). Trip = APPROVED gate-in parchi (revenue_eligible
@@ -27,6 +28,10 @@ export default function DashboardPage() {
   const [drivers, setDrivers] = useState<{ id: string; name: string }[]>([]);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState("");
+  const [manual, setManual] = useState<ManualEntry[]>([]);
+  const [adding, setAdding] = useState(false);
+  const [note, setNote] = useState("");
+  const marks = useUploadDays();
 
   // dates set after mount — a prerendered build date must never stick (see /parchis fix)
   useEffect(() => { const t = ymd(new Date()); setFrom(shiftDays(-6)); setTo(t); }, []);
@@ -40,7 +45,15 @@ export default function DashboardPage() {
       .then((j) => { setRows(j.rows); setDrivers(j.drivers); })
       .catch((e) => { setErr(e.message); setRows([]); })
       .finally(() => setLoading(false));
+    fetch(`/api/manual-entries?${qs}`, { cache: "no-store" })
+      .then((r) => r.json()).then((j) => setManual(j.entries ?? [])).catch(() => setManual([]));
   }, [from, to, driver]);
+
+  // Trips shown = photos + manual entries that no photo has matched yet (a matched
+  // entry is represented by its auto-approved photo, so nothing is counted twice).
+  const allRows = useMemo(
+    () => [...rows, ...manual.filter((m) => !m.matched_photo_id).map(manualAsRow)],
+    [rows, manual]);
 
   const preset = (a: number, b: number) => { setFrom(shiftDays(a)); setTo(shiftDays(b)); };
   // optimistic: update rows now, revert on API failure
@@ -62,11 +75,11 @@ export default function DashboardPage() {
   const thisMonth = () => { const d = new Date(); setFrom(ymd(new Date(d.getFullYear(), d.getMonth(), 1))); setTo(ymd(d)); };
 
   const approved = (r: Row) => r.approval_status === "approved";
-  const trips = rows.filter((r) => r.revenue_eligible && approved(r));
+  const trips = allRows.filter((r) => r.revenue_eligible && approved(r));
   const awaiting = rows.filter((r) => r.revenue_eligible && r.approval_status === "pending").length;
   const stats = {
     trips: trips.length,
-    parchis: rows.length,
+    parchis: rows.length, // photos only — a manual entry has no parchi
     drivers: new Set(trips.map((r) => r.driver_id)).size,
     ft20: trips.filter((r) => r.size_ft === 20).length,
     ft40: trips.filter((r) => r.size_ft === 40).length,
@@ -78,10 +91,10 @@ export default function DashboardPage() {
 
   const perDriver = useMemo(() => {
     const m = new Map<string, { id: string; name: string; trips: number; pending: number; parchis: number; ft20: number; ft40: number; imp: number; exp: number; revenue: number; days: Set<string> }>();
-    for (const r of rows) {
+    for (const r of allRows) {
       if (!m.has(r.driver_id)) m.set(r.driver_id, { id: r.driver_id, name: r.driver_name, trips: 0, pending: 0, parchis: 0, ft20: 0, ft40: 0, imp: 0, exp: 0, revenue: 0, days: new Set() });
       const g = m.get(r.driver_id)!;
-      g.parchis++;
+      if (!r.manualId) g.parchis++;
       if (!r.revenue_eligible) continue;
       if (r.approval_status === "pending") g.pending++;
       if (!approved(r)) continue;
@@ -94,18 +107,19 @@ export default function DashboardPage() {
       if (cycleOf(r) === "EXPORT") g.exp++;
     }
     return [...m.values()].sort((a, b) => b.trips - a.trips || b.parchis - a.parchis);
-  }, [rows]);
+  }, [allRows]);
 
   const detail = useMemo(() => {
     const s = search.trim().toUpperCase();
-    return rows.filter((r) =>
+    return allRows.filter((r) =>
       (show === "all" || (show === "approved" ? r.revenue_eligible && approved(r) : show === "trips" ? r.revenue_eligible : !r.revenue_eligible)) &&
       (!s || [r.container_no, r.vehicle_no, r.gate_pass_no, r.seal_no, r.transporter].some((v) => (v || "").toUpperCase().includes(s))));
-  }, [rows, show, search]);
+  }, [allRows, show, search]);
 
   const COLS: [string, (r: Row) => string | number][] = [
     ["Date/Time", (r) => istDT(r.captured_at)],
     ["Driver", (r) => r.driver_name],
+    ["Source", (r) => (r.manualId ? "✍ manual" : "📷 photo")],
     ["Type", (r) => r.parchi_type || (r.ocr_at ? "—" : "OCR pending")],
     ["Cycle", (r) => cycleOf(r)],
     ["Container", (r) => r.container_no || ""],
@@ -120,6 +134,31 @@ export default function DashboardPage() {
     ["₹", (r) => r.revenue ?? 0],
     ["Status", (r) => `${STATUS[r.approval_status].icon} ${STATUS[r.approval_status].label}${r.approved_by ? " · " + r.approved_by : ""}`],
   ];
+
+  // Approver types a trip in. The API then cross-checks that day's photos and
+  // auto-approves one whose container matches (nothing happens if none does).
+  const addManual = async (form: Record<string, unknown>) => {
+    const res = await fetch("/api/manual-entries", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(form),
+    });
+    const j = await res.json();
+    if (!res.ok) throw new Error(j.error || "save failed");
+    setManual((m) => [j.entry as ManualEntry, ...m]);
+    if (j.matchedPhotoId) {
+      const at = new Date().toISOString();
+      setRows((rs) => rs.map((r) => (r.id === j.matchedPhotoId
+        ? { ...r, approval_status: "approved" as Approval, approved_by: `auto · ${form.by}`, approved_at: at } : r)));
+      setNote("✅ उस दिन की मिलती पर्ची अपने-आप approve हो गई · matching parchi auto-approved");
+    } else {
+      setNote("✍ Manual entry added — उस दिन कोई मिलती पर्ची नहीं मिली · no matching parchi found");
+    }
+    setTimeout(() => setNote(""), 6000);
+  };
+
+  const deleteManual = async (id: string) => {
+    setManual((m) => m.filter((x) => x.id !== id));
+    await fetch(`/api/manual-entries?id=${id}`, { method: "DELETE" }).catch(() => {});
+  };
 
   const exportCsv = () => {
     const esc = (v: string | number) => `"${String(v).replace(/"/g, '""')}"`;
@@ -162,12 +201,12 @@ export default function DashboardPage() {
 
         {/* filters */}
         <div className="bg-white rounded-xl border border-[#D7DEE8] p-3 flex flex-wrap items-end gap-3">
-          <label className="text-[11px] font-semibold text-[#6B7A90] flex flex-col gap-1">From
-            <input type="date" value={from} onChange={(e) => setFrom(e.target.value)} className="border border-[#CBD5E3] rounded-lg px-2 py-1.5 text-[13px] text-[#16243A]" />
-          </label>
-          <label className="text-[11px] font-semibold text-[#6B7A90] flex flex-col gap-1">To
-            <input type="date" value={to} onChange={(e) => setTo(e.target.value)} className="border border-[#CBD5E3] rounded-lg px-2 py-1.5 text-[13px] text-[#16243A]" />
-          </label>
+          <div className="text-[11px] font-semibold text-[#6B7A90] flex flex-col gap-1">From
+            <DayPicker value={from} marks={marks} onPick={setFrom} compact />
+          </div>
+          <div className="text-[11px] font-semibold text-[#6B7A90] flex flex-col gap-1">To
+            <DayPicker value={to} marks={marks} onPick={setTo} compact />
+          </div>
           <label className="text-[11px] font-semibold text-[#6B7A90] flex flex-col gap-1">Driver
             <select value={driver} onChange={(e) => setDriver(e.target.value)} className="border border-[#CBD5E3] rounded-lg px-2 py-1.5 text-[13px] text-[#16243A] min-w-[180px]">
               <option value="">All drivers</option>
@@ -184,6 +223,7 @@ export default function DashboardPage() {
         </div>
 
         {err && <p className="text-[#C0392B] font-semibold text-[13px]">✕ {err}</p>}
+        {note && <p className="bg-[#DDF3E6] text-[#12703E] font-semibold text-[13px] rounded-lg px-3 py-2">{note}</p>}
 
         {tab === "approvals" ? <Approvals rows={rows} from={from} to={to} onSet={setApproval} /> : (<>
 
@@ -239,25 +279,130 @@ export default function DashboardPage() {
             </select>
             <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search container / vehicle / gate pass…"
               className="border border-[#CBD5E3] rounded-lg px-2 py-1.5 text-[12px] w-[240px]" />
+            <button onClick={() => setAdding(true)} className="bg-[#2E5395] text-white rounded-lg px-3 py-1.5 text-[12px] font-bold">➕ Manual entry</button>
             <button onClick={exportCsv} disabled={!detail.length} className="bg-[#1E9E5A] disabled:opacity-40 text-white rounded-lg px-3 py-1.5 text-[12px] font-bold">⬇ Excel / CSV</button>
           </div>
           <table className="w-full text-[12px] whitespace-nowrap">
             <thead className="bg-[#F4F6F9] text-[#6B7A90] text-[11px] uppercase">
-              <tr>{COLS.map(([h]) => <th key={h} className="px-3 py-2 text-left font-bold">{h}</th>)}</tr>
+              <tr>{COLS.map(([h]) => <th key={h} className="px-3 py-2 text-left font-bold">{h}</th>)}<th /></tr>
             </thead>
             <tbody>
               {detail.map((r) => (
-                <tr key={r.id} className="border-t border-[#EDF0F4] hover:bg-[#F8FAFC]">
+                <tr key={r.id} className={`border-t border-[#EDF0F4] hover:bg-[#F8FAFC] ${r.manualId ? "bg-[#F4F7FD]" : ""}`}>
                   {COLS.map(([h, f]) => (
                     <td key={h} className={`px-3 py-1.5 ${h === "Container" ? "font-mono font-bold" : ""} ${h === "Valid" && r.container_valid === false ? "text-[#E8641B]" : ""}`}>{f(r)}</td>
                   ))}
+                  <td className="px-2">
+                    {r.manualId && <button onClick={() => deleteManual(r.manualId!)} title="delete manual entry" className="text-[#C0392B] font-bold px-1">✕</button>}
+                  </td>
                 </tr>
               ))}
             </tbody>
           </table>
         </section>
         </>)}
+
+        {adding && <ManualForm drivers={drivers} marks={marks} defaultDate={to}
+          onClose={() => setAdding(false)} onSave={addManual} />}
       </div>
     </main>
+  );
+}
+
+// ── Manual trip entry (approver only). Saved as an approved trip; the API then
+// cross-checks that day's photos and auto-approves a matching one. ─────────────
+const TYPES = ["GATE-IN IMPORT", "GATE-IN EXPORT", "GATE-OUT IMPORT", "GATE-OUT EXPORT", "DROP-OFF", "RECEIVE"];
+
+function ManualForm({ drivers, marks, defaultDate, onClose, onSave }: {
+  drivers: { id: string; name: string }[]; marks: Record<string, number>; defaultDate: string;
+  onClose: () => void; onSave: (f: Record<string, unknown>) => Promise<void>;
+}) {
+  const [by, setBy] = useState("");
+  const [tripDate, setTripDate] = useState(defaultDate);
+  const [driverId, setDriverId] = useState("");
+  const [containerNo, setContainerNo] = useState("");
+  const [parchiType, setParchiType] = useState(TYPES[0]);
+  const [sizeFt, setSizeFt] = useState<20 | 40>(40);
+  const [gatePassNo, setGatePassNo] = useState("");
+  const [vehicleNo, setVehicleNo] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+
+  useEffect(() => { try { setBy(localStorage.getItem("ng-marshal-evaluator") || ""); } catch {} }, []);
+
+  const submit = async () => {
+    setErr(""); setBusy(true);
+    try {
+      try { localStorage.setItem("ng-marshal-evaluator", by.trim()); } catch {}
+      await onSave({
+        by: by.trim(), tripDate, driverId, driverName: drivers.find((d) => d.id === driverId)?.name ?? "",
+        containerNo, parchiType, sizeFt, cycle: parchiType.split(" ")[1] ?? "", gatePassNo, vehicleNo,
+      });
+      onClose();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : "save failed");
+    } finally { setBusy(false); }
+  };
+
+  const field = "border border-[#CBD5E3] rounded-lg px-2 py-1.5 text-[13px] w-full";
+  const Label = ({ children }: { children: React.ReactNode }) => <span className="text-[11px] font-semibold text-[#6B7A90]">{children}</span>;
+
+  return (
+    <div className="fixed inset-0 z-50 bg-black/50 flex items-start justify-center p-4 overflow-y-auto" onClick={onClose}>
+      <div className="bg-white rounded-xl w-full max-w-[560px] mt-10 p-4 flex flex-col gap-3" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center justify-between">
+          <h2 className="text-[16px] font-extrabold">➕ Manual trip entry</h2>
+          <button onClick={onClose} className="text-[20px] px-2">✕</button>
+        </div>
+        <p className="text-[12px] text-[#6B7A90]">
+          सेव करते ही उस दिन की पर्चियों से मिलान होगा — container मिला तो वो पर्ची अपने-आप approve हो जाएगी.
+        </p>
+
+        <div className="grid grid-cols-2 gap-3">
+          <label className="flex flex-col gap-1"><Label>Date</Label>
+            <DayPicker value={tripDate} marks={marks} onPick={setTripDate} compact />
+          </label>
+          <label className="flex flex-col gap-1"><Label>Driver</Label>
+            <select value={driverId} onChange={(e) => setDriverId(e.target.value)} className={field}>
+              <option value="">— not specified —</option>
+              {drivers.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
+            </select>
+          </label>
+          <label className="flex flex-col gap-1"><Label>Container no *</Label>
+            <input autoFocus value={containerNo} onChange={(e) => setContainerNo(e.target.value.toUpperCase())}
+              placeholder="MSMU8095631" className={`${field} font-mono`} />
+          </label>
+          <label className="flex flex-col gap-1"><Label>Type</Label>
+            <select value={parchiType} onChange={(e) => setParchiType(e.target.value)} className={field}>
+              {TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
+            </select>
+          </label>
+          <label className="flex flex-col gap-1"><Label>Size</Label>
+            <select value={sizeFt} onChange={(e) => setSizeFt(Number(e.target.value) as 20 | 40)} className={field}>
+              <option value={20}>20 ft · ₹60</option>
+              <option value={40}>40 ft · ₹90</option>
+            </select>
+          </label>
+          <label className="flex flex-col gap-1"><Label>Gate pass no</Label>
+            <input value={gatePassNo} onChange={(e) => setGatePassNo(e.target.value)} className={field} />
+          </label>
+          <label className="flex flex-col gap-1"><Label>Vehicle no</Label>
+            <input value={vehicleNo} onChange={(e) => setVehicleNo(e.target.value)} className={field} />
+          </label>
+          <label className="flex flex-col gap-1"><Label>Entered by *</Label>
+            <input value={by} onChange={(e) => setBy(e.target.value)} placeholder="your name" className={field} />
+          </label>
+        </div>
+
+        {err && <p className="text-[#C0392B] font-semibold text-[13px]">✕ {err}</p>}
+        <div className="flex gap-2 justify-end">
+          <button onClick={onClose} className="px-4 py-2 text-[13px] font-bold text-[#6B7A90]">Cancel</button>
+          <button onClick={submit} disabled={busy || !containerNo.trim() || !by.trim() || !tripDate}
+            className="bg-[#1E9E5A] disabled:opacity-40 text-white rounded-lg px-5 py-2 text-[13px] font-bold">
+            {busy ? "saving…" : "✔ Save & cross-check"}
+          </button>
+        </div>
+      </div>
+    </div>
   );
 }

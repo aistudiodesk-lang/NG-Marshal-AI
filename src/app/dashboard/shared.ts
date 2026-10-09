@@ -9,7 +9,30 @@ export interface Row {
   doc_datetime: string | null; vehicle_no: string | null; seal_no: string | null; transporter: string | null;
   revenue: number | null; revenue_eligible: boolean | null; ocr_at: string | null;
   approval_status: Approval; approved_by: string | null; approved_at: string | null; url: string | null;
+  manualId?: string; // set on rows that came from a manual entry (no photo)
 }
+
+/** A trip the approver typed in on /dashboard instead of it arriving as a photo. */
+export interface ManualEntry {
+  id: string; trip_date: string; driver_id: string | null; driver_name: string | null;
+  container_no: string; iso_code: string | null; size_ft: number | null; parchi_type: string | null;
+  cycle: string | null; gate_pass_no: string | null; vehicle_no: string | null;
+  revenue: number | null; revenue_eligible: boolean | null; entered_by: string;
+  matched_photo_id: string | null; matched_at: string | null; created_at: string;
+}
+
+/** Show an unmatched manual entry as a row in the trip tables. A MATCHED entry is
+ *  represented by its (auto-approved) photo instead, so the trip is never counted twice. */
+export const manualAsRow = (m: ManualEntry): Row => ({
+  id: `m-${m.id}`, manualId: m.id,
+  driver_id: m.driver_id ?? "", driver_name: m.driver_name ?? "—",
+  captured_at: `${m.trip_date}T00:00:00+05:30`,
+  parchi_type: m.parchi_type, container_no: m.container_no, container_valid: null,
+  iso_code: m.iso_code, size_ft: m.size_ft, gate_pass_no: m.gate_pass_no, cycle: m.cycle,
+  doc_datetime: null, vehicle_no: m.vehicle_no, seal_no: null, transporter: null,
+  revenue: m.revenue, revenue_eligible: m.revenue_eligible, ocr_at: null,
+  approval_status: "approved", approved_by: m.entered_by, approved_at: m.created_at, url: null,
+});
 
 /** IST calendar day of a timestamp, YYYY-MM-DD. */
 export const istDay = (iso: string) => new Date(iso).toLocaleDateString("en-CA", { timeZone: "Asia/Kolkata" });

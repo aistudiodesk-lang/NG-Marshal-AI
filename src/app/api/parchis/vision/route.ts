@@ -7,6 +7,7 @@ import { createClient } from "@supabase/supabase-js";
 import { extractParchiFields } from "@/lib/gemini";
 import { computeRevenue } from "@/lib/revenue";
 import { isValidContainer } from "@/lib/parchiOcr";
+import { matchPhotoToEntry } from "@/lib/manualMatch";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 60; // Gemini vision call can take a few seconds
@@ -22,7 +23,7 @@ export async function POST(req: NextRequest) {
   // find the image
   const { data: row, error: rowErr } = await sb
     .from("parchi_photos")
-    .select("storage_path")
+    .select("storage_path,captured_at")
     .eq("id", body.id)
     .single();
   if (rowErr || !row) return NextResponse.json({ error: rowErr?.message || "not found" }, { status: 404 });
@@ -64,8 +65,16 @@ export async function POST(req: NextRequest) {
   const { error: upErr } = await sb.from("parchi_photos").update(patch).eq("id", body.id);
   if (upErr) return NextResponse.json({ error: upErr.message }, { status: 500 });
 
+  // cross-check against the approver's manual entries — a match auto-approves this photo
+  const autoApproved = await matchPhotoToEntry(sb, {
+    id: body.id,
+    containerNo: fields.containerNo,
+    capturedAt: row.captured_at as string,
+  }).catch(() => false);
+
   return NextResponse.json({
     ok: true,
+    autoApproved,
     fields,
     revenue: rev.revenue,
     sizeFt: rev.sizeFt,

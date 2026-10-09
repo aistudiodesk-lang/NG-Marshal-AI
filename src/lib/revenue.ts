@@ -25,8 +25,11 @@ export function isRevenueParchi(parchiType?: string | null): boolean {
 }
 
 export function computeRevenue(parchiType?: string | null, isoCode?: string | null): RevenueResult {
+  return revenueForSize(parchiType, sizeFromIso(isoCode));
+}
+
+/** Same rule, when the size is known directly (manual entry picks 20/40 — no ISO code). */
+export function revenueForSize(parchiType: string | null | undefined, sizeFt: 20 | 40 | null): RevenueResult {
   const eligible = isRevenueParchi(parchiType);
-  const sizeFt = sizeFromIso(isoCode);
-  const revenue = eligible && sizeFt ? RATE[sizeFt] : 0;
-  return { sizeFt, revenue, eligible };
+  return { sizeFt, revenue: eligible && sizeFt ? RATE[sizeFt] : 0, eligible };
 }
