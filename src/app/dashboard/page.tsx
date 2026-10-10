@@ -5,7 +5,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Wordmark } from "@/components/Brand";
 
 import Approvals from "./Approvals";
-import { Approval, ManualEntry, Row, STATUS, cycleOf, istDT, manualAsRow } from "./shared";
+import { Approval, ManualEntry, Row, STATUS, cycleOf, istDT, manualAsRow, parseDay, parsePaste, parseSize } from "./shared";
 import DayPicker, { useUploadDays } from "@/components/DayPicker";
 
 // Office dashboard: Overview (trips per driver + parchi details, CSV) and Approvals
@@ -135,24 +135,17 @@ export default function DashboardPage() {
     ["Status", (r) => `${STATUS[r.approval_status].icon} ${STATUS[r.approval_status].label}${r.approved_by ? " · " + r.approved_by : ""}`],
   ];
 
-  // Approver types a trip in. The API then cross-checks that day's photos and
-  // auto-approves one whose container matches (nothing happens if none does).
-  const addManual = async (form: Record<string, unknown>) => {
-    const res = await fetch("/api/manual-entries", {
-      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(form),
-    });
-    const j = await res.json();
-    if (!res.ok) throw new Error(j.error || "save failed");
-    setManual((m) => [j.entry as ManualEntry, ...m]);
-    if (j.matchedPhotoId) {
+  // Grid saved a batch. Each entry may have auto-approved a matching photo (cross-check runs in the API).
+  const onManualSaved = (entries: ManualEntry[], by: string) => {
+    setManual((m) => [...entries, ...m]);
+    const hit = new Set(entries.map((e) => e.matched_photo_id).filter(Boolean));
+    if (hit.size) {
       const at = new Date().toISOString();
-      setRows((rs) => rs.map((r) => (r.id === j.matchedPhotoId
-        ? { ...r, approval_status: "approved" as Approval, approved_by: `auto · ${form.by}`, approved_at: at } : r)));
-      setNote("✅ उस दिन की मिलती पर्ची अपने-आप approve हो गई · matching parchi auto-approved");
-    } else {
-      setNote("✍ Manual entry added — उस दिन कोई मिलती पर्ची नहीं मिली · no matching parchi found");
+      setRows((rs) => rs.map((r) => (hit.has(r.id)
+        ? { ...r, approval_status: "approved" as Approval, approved_by: `auto · ${by}`, approved_at: at } : r)));
     }
-    setTimeout(() => setNote(""), 6000);
+    setNote(`✍ ${entries.length} manual entries saved · ${hit.size} मिलती पर्ची अपने-आप approve हुई (auto-approved)`);
+    setTimeout(() => setNote(""), 8000);
   };
 
   const deleteManual = async (id: string) => {
@@ -279,9 +272,10 @@ export default function DashboardPage() {
             </select>
             <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search container / vehicle / gate pass…"
               className="border border-[#CBD5E3] rounded-lg px-2 py-1.5 text-[12px] w-[240px]" />
-            <button onClick={() => setAdding(true)} className="bg-[#2E5395] text-white rounded-lg px-3 py-1.5 text-[12px] font-bold">➕ Manual entry</button>
+            <button onClick={() => setAdding((a) => !a)} className="bg-[#2E5395] text-white rounded-lg px-3 py-1.5 text-[12px] font-bold">{adding ? "▲ Close entry" : "➕ Manual entry (paste from Excel)"}</button>
             <button onClick={exportCsv} disabled={!detail.length} className="bg-[#1E9E5A] disabled:opacity-40 text-white rounded-lg px-3 py-1.5 text-[12px] font-bold">⬇ Excel / CSV</button>
           </div>
+          {adding && <ManualSheet drivers={drivers} defaultDate={to} onClose={() => setAdding(false)} onSaved={onManualSaved} />}
           <table className="w-full text-[12px] whitespace-nowrap">
             <thead className="bg-[#F4F6F9] text-[#6B7A90] text-[11px] uppercase">
               <tr>{COLS.map(([h]) => <th key={h} className="px-3 py-2 text-left font-bold">{h}</th>)}<th /></tr>
@@ -302,106 +296,137 @@ export default function DashboardPage() {
         </section>
         </>)}
 
-        {adding && <ManualForm drivers={drivers} marks={marks} defaultDate={to}
-          onClose={() => setAdding(false)} onSave={addManual} />}
       </div>
     </main>
   );
 }
 
-// ── Manual trip entry (approver only). Saved as an approved trip; the API then
-// cross-checks that day's photos and auto-approves a matching one. ─────────────
+// ── Manual trip entry — an Excel-like grid. Copy one or many rows in Excel, click a
+// cell, Ctrl+V: cells fill from there, extra rows are added. Saved rows are approved
+// trips; the API cross-checks each against that day's photos and auto-approves matches.
 const TYPES = ["GATE-IN IMPORT", "GATE-IN EXPORT", "GATE-OUT IMPORT", "GATE-OUT EXPORT", "DROP-OFF", "RECEIVE"];
+const SHEET_COLS = ["Date", "Driver", "Container no *", "Type", "Size (20/40)", "Gate pass", "Vehicle"] as const;
+type Cells = string[];
+const blank = (): Cells => SHEET_COLS.map(() => "");
+const filled = (r: Cells) => r.some((c) => c.trim());
 
-function ManualForm({ drivers, marks, defaultDate, onClose, onSave }: {
-  drivers: { id: string; name: string }[]; marks: Record<string, number>; defaultDate: string;
-  onClose: () => void; onSave: (f: Record<string, unknown>) => Promise<void>;
+function ManualSheet({ drivers, defaultDate, onClose, onSaved }: {
+  drivers: { id: string; name: string }[]; defaultDate: string;
+  onClose: () => void; onSaved: (entries: ManualEntry[], by: string) => void;
 }) {
+  const [grid, setGrid] = useState<Cells[]>(() => Array.from({ length: 5 }, blank));
+  const [rowErr, setRowErr] = useState<Record<number, string>>({});
   const [by, setBy] = useState("");
-  const [tripDate, setTripDate] = useState(defaultDate);
-  const [driverId, setDriverId] = useState("");
-  const [containerNo, setContainerNo] = useState("");
-  const [parchiType, setParchiType] = useState(TYPES[0]);
-  const [sizeFt, setSizeFt] = useState<20 | 40>(40);
-  const [gatePassNo, setGatePassNo] = useState("");
-  const [vehicleNo, setVehicleNo] = useState("");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
 
   useEffect(() => { try { setBy(localStorage.getItem("ng-marshal-evaluator") || ""); } catch {} }, []);
 
-  const submit = async () => {
+  const setCell = (r: number, c: number, v: string) =>
+    setGrid((g) => g.map((row, i) => (i === r ? row.map((x, j) => (j === c ? v : x)) : row)));
+
+  // Excel paste: a block of rows/columns lands with its top-left at the clicked cell.
+  // A single value (no tab/newline) is left to the browser as a normal paste.
+  const onPaste = (r: number, c: number) => (e: React.ClipboardEvent<HTMLInputElement>) => {
+    const text = e.clipboardData.getData("text/plain");
+    if (!/[\t\n]/.test(text.trim())) return;
+    e.preventDefault();
+    const block = parsePaste(text);
+    setGrid((g) => {
+      const out = g.map((row) => [...row]);
+      block.forEach((cells, i) => {
+        while (out.length <= r + i) out.push(blank());
+        cells.forEach((v, j) => { if (c + j < SHEET_COLS.length) out[r + i][c + j] = v; });
+      });
+      return out;
+    });
+    setRowErr({});
+  };
+
+  const driverFor = (name: string) => {
+    const n = name.trim().toLowerCase();
+    return n ? drivers.find((d) => d.name.toLowerCase() === n || d.id.toLowerCase() === n) : undefined;
+  };
+
+  const used = grid.map((row, i) => [row, i] as const).filter(([row]) => filled(row));
+
+  const save = async () => {
     setErr(""); setBusy(true);
     try {
       try { localStorage.setItem("ng-marshal-evaluator", by.trim()); } catch {}
-      await onSave({
-        by: by.trim(), tripDate, driverId, driverName: drivers.find((d) => d.id === driverId)?.name ?? "",
-        containerNo, parchiType, sizeFt, cycle: parchiType.split(" ")[1] ?? "", gatePassNo, vehicleNo,
+      const entries = used.map(([[date, drv, cont, type, size, gp, veh]]) => {
+        const d = driverFor(drv);
+        return {
+          tripDate: date.trim() ? parseDay(date) : defaultDate,
+          driverId: d?.id ?? "", driverName: d?.name ?? drv.trim(),
+          containerNo: cont, parchiType: type || TYPES[0], sizeFt: parseSize(size),
+          gatePassNo: gp, vehicleNo: veh,
+        };
       });
-      onClose();
+      const res = await fetch("/api/manual-entries", {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ by: by.trim(), entries }),
+      });
+      const j = await res.json();
+      if (!res.ok) throw new Error(j.error || "save failed");
+      onSaved(j.entries as ManualEntry[], by.trim());
+      // keep only the rows that failed, with their reason, so they can be fixed and re-saved
+      const bad: { index: number; error: string }[] = j.errors ?? [];
+      if (!bad.length) return onClose();
+      setGrid(bad.map((b) => grid[used[b.index][1]]));
+      setRowErr(Object.fromEntries(bad.map((b, i) => [i, b.error])));
     } catch (e) {
       setErr(e instanceof Error ? e.message : "save failed");
     } finally { setBusy(false); }
   };
 
-  const field = "border border-[#CBD5E3] rounded-lg px-2 py-1.5 text-[13px] w-full";
-  const Label = ({ children }: { children: React.ReactNode }) => <span className="text-[11px] font-semibold text-[#6B7A90]">{children}</span>;
-
+  const cell = "w-full px-2 py-1.5 text-[12px] outline-none focus:bg-[#EAF1FF] bg-transparent";
   return (
-    <div className="fixed inset-0 z-50 bg-black/50 flex items-start justify-center p-4 overflow-y-auto" onClick={onClose}>
-      <div className="bg-white rounded-xl w-full max-w-[560px] mt-10 p-4 flex flex-col gap-3" onClick={(e) => e.stopPropagation()}>
-        <div className="flex items-center justify-between">
-          <h2 className="text-[16px] font-extrabold">➕ Manual trip entry</h2>
-          <button onClick={onClose} className="text-[20px] px-2">✕</button>
-        </div>
-        <p className="text-[12px] text-[#6B7A90]">
-          सेव करते ही उस दिन की पर्चियों से मिलान होगा — container मिला तो वो पर्ची अपने-आप approve हो जाएगी.
-        </p>
-
-        <div className="grid grid-cols-2 gap-3">
-          <label className="flex flex-col gap-1"><Label>Date</Label>
-            <DayPicker value={tripDate} marks={marks} onPick={setTripDate} compact />
-          </label>
-          <label className="flex flex-col gap-1"><Label>Driver</Label>
-            <select value={driverId} onChange={(e) => setDriverId(e.target.value)} className={field}>
-              <option value="">— not specified —</option>
-              {drivers.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
-            </select>
-          </label>
-          <label className="flex flex-col gap-1"><Label>Container no *</Label>
-            <input autoFocus value={containerNo} onChange={(e) => setContainerNo(e.target.value.toUpperCase())}
-              placeholder="MSMU8095631" className={`${field} font-mono`} />
-          </label>
-          <label className="flex flex-col gap-1"><Label>Type</Label>
-            <select value={parchiType} onChange={(e) => setParchiType(e.target.value)} className={field}>
-              {TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
-            </select>
-          </label>
-          <label className="flex flex-col gap-1"><Label>Size</Label>
-            <select value={sizeFt} onChange={(e) => setSizeFt(Number(e.target.value) as 20 | 40)} className={field}>
-              <option value={20}>20 ft · ₹60</option>
-              <option value={40}>40 ft · ₹90</option>
-            </select>
-          </label>
-          <label className="flex flex-col gap-1"><Label>Gate pass no</Label>
-            <input value={gatePassNo} onChange={(e) => setGatePassNo(e.target.value)} className={field} />
-          </label>
-          <label className="flex flex-col gap-1"><Label>Vehicle no</Label>
-            <input value={vehicleNo} onChange={(e) => setVehicleNo(e.target.value)} className={field} />
-          </label>
-          <label className="flex flex-col gap-1"><Label>Entered by *</Label>
-            <input value={by} onChange={(e) => setBy(e.target.value)} placeholder="your name" className={field} />
-          </label>
-        </div>
-
-        {err && <p className="text-[#C0392B] font-semibold text-[13px]">✕ {err}</p>}
-        <div className="flex gap-2 justify-end">
-          <button onClick={onClose} className="px-4 py-2 text-[13px] font-bold text-[#6B7A90]">Cancel</button>
-          <button onClick={submit} disabled={busy || !containerNo.trim() || !by.trim() || !tripDate}
-            className="bg-[#1E9E5A] disabled:opacity-40 text-white rounded-lg px-5 py-2 text-[13px] font-bold">
-            {busy ? "saving…" : "✔ Save & cross-check"}
-          </button>
-        </div>
+    <div className="border-y border-[#D7DEE8] bg-[#F8FAFC] px-4 py-3 flex flex-col gap-2">
+      <p className="text-[12px] text-[#6B7A90]">
+        Excel से rows copy करें → किसी cell पर click → <b>Ctrl+V</b>. एक या कई rows एक साथ paste हो जाएँगी.
+        Columns: Date · Driver · Container · Type · Size · Gate pass · Vehicle (खाली date = {defaultDate}).
+        सेव करते ही उस दिन की पर्चियों से मिलान होगा.
+      </p>
+      <div className="overflow-x-auto">
+        <table className="text-[12px] border-collapse min-w-[860px] w-full bg-white">
+          <thead className="bg-[#F4F6F9] text-[#6B7A90] text-[11px] uppercase">
+            <tr><th className="w-8" />{SHEET_COLS.map((h) => <th key={h} className="border border-[#D7DEE8] px-2 py-1 text-left font-bold">{h}</th>)}<th className="w-8" /></tr>
+          </thead>
+          <tbody>
+            {grid.map((row, r) => (
+              <tr key={r} className={rowErr[r] ? "bg-[#FBE1E1]" : ""}>
+                <td className="text-center text-[11px] text-[#6B7A90] tabular-nums">{r + 1}</td>
+                {row.map((v, c) => (
+                  <td key={c} className="border border-[#D7DEE8] p-0">
+                    <input value={v} onChange={(e) => setCell(r, c, e.target.value)} onPaste={onPaste(r, c)}
+                      list={c === 1 ? "sheet-drivers" : c === 3 ? "sheet-types" : undefined}
+                      placeholder={c === 0 ? defaultDate : c === 3 ? TYPES[0] : c === 4 ? "40" : ""}
+                      className={`${cell} ${c === 2 ? "font-mono font-bold uppercase" : ""}`} />
+                  </td>
+                ))}
+                <td className="text-center">
+                  {rowErr[r] ? <span title={rowErr[r]} className="text-[#A12B2B] font-bold">⚠</span>
+                    : <button onClick={() => setGrid((g) => g.length > 1 ? g.filter((_, i) => i !== r) : [blank()])} title="remove row" className="text-[#C0392B] font-bold px-1">✕</button>}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        <datalist id="sheet-drivers">{drivers.map((d) => <option key={d.id} value={d.name} />)}</datalist>
+        <datalist id="sheet-types">{TYPES.map((t) => <option key={t} value={t} />)}</datalist>
+      </div>
+      {Object.keys(rowErr).length > 0 && <p className="text-[#A12B2B] font-semibold text-[12px]">⚠ ये rows सेव नहीं हुईं — {[...new Set(Object.values(rowErr))].join(", ")}. ठीक करके फिर Save करें.</p>}
+      {err && <p className="text-[#C0392B] font-semibold text-[13px]">✕ {err}</p>}
+      <div className="flex flex-wrap items-center gap-2">
+        <button onClick={() => setGrid((g) => [...g, ...Array.from({ length: 5 }, blank)])} className="bg-white border border-[#CBD5E3] rounded-lg px-3 py-1.5 text-[12px] font-bold">+ 5 rows</button>
+        <span className="text-[12px] text-[#6B7A90] mr-auto">{used.length} rows filled</span>
+        <input value={by} onChange={(e) => setBy(e.target.value)} placeholder="Entered by * (your name)"
+          className="border border-[#CBD5E3] rounded-lg px-2 py-1.5 text-[12px] w-[200px]" />
+        <button onClick={onClose} className="px-3 py-1.5 text-[12px] font-bold text-[#6B7A90]">Cancel</button>
+        <button onClick={save} disabled={busy || !used.length || !by.trim()}
+          className="bg-[#1E9E5A] disabled:opacity-40 text-white rounded-lg px-4 py-1.5 text-[12px] font-bold">
+          {busy ? "saving…" : `✔ Save ${used.length || ""} & cross-check`}
+        </button>
       </div>
     </div>
   );

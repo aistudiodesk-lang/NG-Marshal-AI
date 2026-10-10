@@ -54,3 +54,32 @@ export const STATUS = {
   pending:  { icon: "⏳", label: "Pending",  fill: "#E0A100", tint: "#FFF1CC", ink: "#8A5A00" },
   rejected: { icon: "❌", label: "Rejected", fill: "#D64545", tint: "#FBE1E1", ink: "#A12B2B" },
 } as const;
+
+// ── Paste-from-Excel helpers for the manual entry grid ───────────────────────
+
+/** Excel clipboard (tab-separated, one line per row) → cells. Drops blank lines and
+ *  header-ish lines (no digit anywhere), so copying with the header row is fine. */
+export const parsePaste = (text: string): string[][] =>
+  text.replace(/\r/g, "").split("\n").map((l) => l.split("\t").map((c) => c.trim()))
+    .filter((cells) => cells.some((c) => /\d/.test(c)));
+
+const MON = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
+
+/** Whatever Excel pastes as a date → YYYY-MM-DD, or "" if unreadable.
+ *  Accepts 2026-10-09, 09/10/2026, 9-10-26, 09.10.2026 (Indian day-first), 9-Oct-2026, 9 Oct 26. */
+export function parseDay(s: string): string {
+  const t = s.trim();
+  let m = t.match(/^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})/);
+  if (m) return fmt(+m[1], +m[2], +m[3]);
+  m = t.match(/^(\d{1,2})[-/. ](\d{1,2}|[a-z]{3})[a-z]*[-/. ,]+(\d{2,4})$/i);
+  if (!m) return "";
+  const mon = /\d/.test(m[2]) ? +m[2] : MON.indexOf(m[2].toLowerCase()) + 1;
+  return fmt(m[3].length === 2 ? 2000 + +m[3] : +m[3], mon, +m[1]);
+}
+function fmt(y: number, mo: number, d: number) {
+  if (mo < 1 || mo > 12 || d < 1 || d > 31) return "";
+  return `${y}-${String(mo).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
+}
+
+/** "40", "40ft", "40'", "2 x 20" → 20 | 40 | null */
+export const parseSize = (s: string): 20 | 40 | null => (/40|45/.test(s) ? 40 : /20/.test(s) ? 20 : null);
