@@ -1,16 +1,24 @@
-// Server-side parchi reader. Given a parchi_photos id, it downloads the image from the
-// private `parchis` bucket (service role), reads it with Gemini vision, computes revenue,
-// and saves the fields back onto the row. Called by BOTH the driver app (right after upload)
-// and the /parchis office page ("OCR करो"). The Gemini key stays server-side; no APK rebuild.
+// Server-side parchi reader. The photo is READ by the fine-tuned model on the office Mac mini
+// (Qwen3.5-4B, ~10 s per photo), not by Gemini. The Mac can't be called from Vercel, so it
+// works the other way round: it watches parchi_photos for rows with ocr_at = null, reads them,
+// and writes the fields + revenue (same columns and same computeRevenue rule as before) and
+// runs the manual-entry cross-check. This route only asks for a read and waits for it.
+// Called by BOTH the driver app (right after upload) and the /parchis office page.
+// Response shape is unchanged, so neither caller needed to change.
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
-import { extractParchiFields } from "@/lib/gemini";
-import { computeRevenue } from "@/lib/revenue";
-import { isValidContainer } from "@/lib/parchiOcr";
-import { matchPhotoToEntry } from "@/lib/manualMatch";
 
 export const dynamic = "force-dynamic";
-export const maxDuration = 60; // Gemini vision call can take a few seconds
+export const maxDuration = 60; // wait up to ~55 s for the Mac reader
+
+const WAIT_MS = 55_000;
+const POLL_MS = 1_500;
+
+const COLS =
+  "ocr_at,parchi_type,container_no,iso_code,gate_pass_no,cycle,doc_datetime,vehicle_no,seal_no,transporter," +
+  "size_ft,revenue,revenue_eligible,approved_by";
+
+const str = (v: unknown) => (v === null || v === undefined || v === "" ? undefined : String(v));
 
 export async function POST(req: NextRequest) {
   const body = (await req.json().catch(() => ({}))) as { id?: string };
@@ -20,64 +28,48 @@ export async function POST(req: NextRequest) {
     auth: { persistSession: false },
   });
 
-  // find the image
-  const { data: row, error: rowErr } = await sb
-    .from("parchi_photos")
-    .select("storage_path,captured_at")
-    .eq("id", body.id)
-    .single();
+  const { data: row, error: rowErr } = await sb.from("parchi_photos").select("ocr_at").eq("id", body.id).single();
   if (rowErr || !row) return NextResponse.json({ error: rowErr?.message || "not found" }, { status: 404 });
 
-  // download the private image bytes → base64
-  const { data: blob, error: dlErr } = await sb.storage.from("parchis").download(row.storage_path as string);
-  if (dlErr || !blob) return NextResponse.json({ error: dlErr?.message || "download failed" }, { status: 500 });
-  const buf = Buffer.from(await blob.arrayBuffer());
-  const mime = blob.type || "image/jpeg";
-
-  // read it with Gemini
-  let fields, raw;
-  try {
-    ({ fields, raw } = await extractParchiFields(buf.toString("base64"), mime));
-  } catch (e) {
-    return NextResponse.json({ error: e instanceof Error ? e.message : "vision failed" }, { status: 502 });
+  // Already read → this is a re-read request ("↻ फिर OCR"): clear ocr_at so the Mac reads it again.
+  if (row.ocr_at) {
+    const { error } = await sb.from("parchi_photos").update({ ocr_at: null }).eq("id", body.id);
+    if (error) return NextResponse.json({ error: error.message }, { status: 500 });
   }
 
-  // revenue = single source of truth (parchi type + ISO code)
-  const rev = computeRevenue(fields.parchiType, fields.isoCode);
+  // Wait for the Mac reader to fill the row.
+  const deadline = Date.now() + WAIT_MS;
+  while (Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, POLL_MS));
+    const { data } = await sb.from("parchi_photos").select(COLS).eq("id", body.id).single();
+    const r = data as Record<string, unknown> | null;
+    if (r?.ocr_at) {
+      return NextResponse.json({
+        ok: true,
+        reader: "mac",
+        autoApproved: String(r.approved_by ?? "").startsWith("auto"),
+        fields: {
+          parchiType: str(r.parchi_type),
+          containerNo: str(r.container_no),
+          isoCode: str(r.iso_code),
+          gatePassNo: str(r.gate_pass_no),
+          cycle: str(r.cycle),
+          docDatetime: str(r.doc_datetime),
+          vehicleNo: str(r.vehicle_no),
+          sealNo: str(r.seal_no),
+          transporter: str(r.transporter),
+        },
+        revenue: r.revenue ?? 0,
+        sizeFt: r.size_ft ?? null,
+        eligible: !!r.revenue_eligible,
+      });
+    }
+  }
 
-  const patch = {
-    parchi_type: fields.parchiType ?? null,
-    container_no: fields.containerNo ?? null,
-    container_valid: fields.containerNo ? isValidContainer(fields.containerNo) : null,
-    iso_code: fields.isoCode ?? null,
-    gate_pass_no: fields.gatePassNo ?? null,
-    cycle: fields.cycle ?? null,
-    doc_datetime: fields.docDatetime ?? null,
-    vehicle_no: fields.vehicleNo ?? null,
-    seal_no: fields.sealNo ?? null,
-    transporter: fields.transporter ?? null,
-    size_ft: rev.sizeFt,
-    revenue: rev.revenue,
-    revenue_eligible: rev.eligible,
-    ocr_raw: raw,
-    ocr_at: new Date().toISOString(),
-  };
-  const { error: upErr } = await sb.from("parchi_photos").update(patch).eq("id", body.id);
-  if (upErr) return NextResponse.json({ error: upErr.message }, { status: 500 });
-
-  // cross-check against the approver's manual entries — a match auto-approves this photo
-  const autoApproved = await matchPhotoToEntry(sb, {
-    id: body.id,
-    containerNo: fields.containerNo,
-    capturedAt: row.captured_at as string,
-  }).catch(() => false);
-
-  return NextResponse.json({
-    ok: true,
-    autoApproved,
-    fields,
-    revenue: rev.revenue,
-    sizeFt: rev.sizeFt,
-    eligible: rev.eligible,
-  });
+  // Not read in time (Mac busy, training, or offline). The photo is saved and stays queued;
+  // the Mac reads it as soon as it can and the revenue shows up on the next refresh.
+  return NextResponse.json(
+    { error: "Mac reader is busy — this parchi is queued and will be read automatically", pending: true },
+    { status: 504 },
+  );
 }

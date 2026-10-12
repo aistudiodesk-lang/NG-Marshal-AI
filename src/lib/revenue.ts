@@ -19,7 +19,7 @@ export function sizeFromIso(iso?: string | null): 20 | 40 | null {
 }
 
 /** GATE-IN passes are the paying parchis (import gate-in + export gate-in).
- *  Matches "GATE IN", "GATEIN" and "GATE-IN" (Gemini emits the hyphenated form). */
+ *  Matches "GATE IN", "GATEIN" and "GATE-IN" (the parchi reader emits the hyphenated form). */
 export function isRevenueParchi(parchiType?: string | null): boolean {
   return /GATE[\s-]*IN/.test((parchiType || "").toUpperCase());
 }

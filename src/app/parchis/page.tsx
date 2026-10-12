@@ -7,7 +7,7 @@ import { isValidContainer } from "@/lib/parchiOcr";
 import DayPicker, { useUploadDays } from "@/components/DayPicker";
 
 // Reconciliation view (for US, not drivers): per-driver parchi counts + the photos,
-// with on-demand server-side Gemini vision OCR to pull the container no, parchi type,
+// with on-demand parchi reading (local model on the office Mac) to pull the container no, parchi type,
 // cycle, date, vehicle & seal. Fields are editable + saved back to the DB.
 
 interface Ocr {
@@ -75,7 +75,7 @@ export default function ParchisPage() {
     setTimeout(() => setSaved((s) => ({ ...s, [id]: false })), 1800);
   }, []);
 
-  // Server reads the image with Gemini vision and saves the row; we mirror the fields into
+  // The Mac reader reads the image and saves the row (via /api/parchis/vision); we mirror the fields into
   // the editable form so the operator can tweak + re-save (which goes through /extract).
   const runOcr = useCallback(async (photo: Photo) => {
     setBusy((b) => ({ ...b, [photo.id]: true }));

@@ -112,7 +112,7 @@ function Login({ onLogin }: { onLogin: (d: { id: string; name: string }) => void
 
 // ── CAPTURE — the whole app. Camera + today's पर्ची count + 💰 earnings. ──────────
 // Capture is INSTANT: the tap counts immediately and the screen is ready again at once.
-// Uploading happens in the background; the parchi is then READ on the server (Gemini vision)
+// Uploading happens in the background; the parchi is then READ by the parchi model on the office Mac (via /api/parchis/vision)
 // — nothing heavy runs on the phone, so even a cheap handset stays snappy. Revenue pops
 // whenever the server finishes reading it.
 interface Reward { revenue: number; sizeFt: 20 | 40 | null }
