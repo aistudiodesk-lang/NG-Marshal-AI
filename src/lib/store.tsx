@@ -893,10 +893,10 @@ function coreReducer(s: AppState, a: Action): AppState {
         const id = "d-" + d.name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
         const i = drivers.findIndex((x) => x.id === id);
         if (i >= 0) {
-          drivers[i] = { ...drivers[i], phone: d.phone ?? drivers[i].phone, vendor: d.vendor ?? drivers[i].vendor, note: d.note ?? drivers[i].note };
+          drivers[i] = { ...drivers[i], nameHi: d.nameHi ?? drivers[i].nameHi, phone: d.phone ?? drivers[i].phone, vendor: d.vendor ?? drivers[i].vendor, note: d.note ?? drivers[i].note };
           updated++;
         } else {
-          drivers.push({ id, name: d.name, nameHi: d.name, phone: d.phone ?? "", vendor: d.vendor ?? "—", onDuty: false, streakDays: 0, note: d.note });
+          drivers.push({ id, name: d.name, nameHi: d.nameHi ?? d.name, phone: d.phone ?? "", vendor: d.vendor ?? "—", onDuty: false, streakDays: 0, note: d.note });
           added++;
         }
         if (d.vehicleId) {

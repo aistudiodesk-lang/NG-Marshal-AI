@@ -146,6 +146,7 @@ export interface ImportedVehicle {
 
 export interface ImportedDriver {
   name: string;
+  nameHi?: string; // optional "Hindi" column — shown on the driver app login
   phone?: string;
   vendor?: string;
   note?: string;
@@ -519,12 +520,14 @@ export function extractDrivers(sheet: ParsedSheet): ImportedDriver[] {
   const venCol = findCol(headers, ["vendor", "transporter", "company"]);
   const noteCol = findCol(headers, ["note", "restriction", "remark"]);
   const vCol = findCol(headers, ["itv", "vehicle", "truck"]);
+  const hCol = findCol(headers, ["hindi"]);
   if (nCol < 0) return [];
   return sheet.rows.slice(1).flatMap((r) => {
     const name = r[nCol];
     if (!name) return [];
     return [{
       name,
+      nameHi: hCol >= 0 ? r[hCol] || undefined : undefined,
       phone: pCol >= 0 ? r[pCol] || undefined : undefined,
       vendor: venCol >= 0 ? r[venCol] || undefined : undefined,
       note: noteCol >= 0 ? r[noteCol] || undefined : undefined,

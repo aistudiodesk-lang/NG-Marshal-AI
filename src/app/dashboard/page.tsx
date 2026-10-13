@@ -7,6 +7,7 @@ import { Wordmark } from "@/components/Brand";
 import Approvals from "./Approvals";
 import { Approval, ManualEntry, Row, STATUS, cycleOf, istDT, manualAsRow, parseDay, parsePaste, parseSize } from "./shared";
 import DayPicker, { useUploadDays } from "@/components/DayPicker";
+import DriverPicker from "@/components/DriverPicker";
 
 // Office dashboard: Overview (trips per driver + parchi details, CSV) and Approvals
 // (evaluator ticks each photo daily). Trip = APPROVED gate-in parchi (revenue_eligible
@@ -200,12 +201,9 @@ export default function DashboardPage() {
           <div className="text-[11px] font-semibold text-[#6B7A90] flex flex-col gap-1">To
             <DayPicker value={to} marks={marks} onPick={setTo} compact />
           </div>
-          <label className="text-[11px] font-semibold text-[#6B7A90] flex flex-col gap-1">Driver
-            <select value={driver} onChange={(e) => setDriver(e.target.value)} className="border border-[#CBD5E3] rounded-lg px-2 py-1.5 text-[13px] text-[#16243A] min-w-[180px]">
-              <option value="">All drivers</option>
-              {drivers.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
-            </select>
-          </label>
+          <div className="text-[11px] font-semibold text-[#6B7A90] flex flex-col gap-1 w-[240px]">Driver
+            <DriverPicker drivers={drivers} value={driver} onPick={setDriver} allLabel="All drivers" placeholder="search driver…" />
+          </div>
           <div className="flex gap-1.5 flex-wrap">
             <button className={btn} onClick={() => preset(0, 0)}>Today</button>
             <button className={btn} onClick={() => preset(-1, -1)}>Yesterday</button>

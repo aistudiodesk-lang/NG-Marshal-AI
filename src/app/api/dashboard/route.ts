@@ -2,6 +2,7 @@
 // range, optionally one driver. Aggregation happens client-side on /dashboard.
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
+import { SITE } from "@/lib/seed";
 
 export const dynamic = "force-dynamic";
 
@@ -31,10 +32,16 @@ export async function GET(req: NextRequest) {
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
 
   // full driver list (for the filter dropdown) regardless of range
-  const { data: all } = await sb.from("parchi_photos").select("driver_id,driver_name").range(0, 9999);
-  const drivers = [...new Map((all ?? []).map((r) => [r.driver_id, r.driver_name])).entries()]
-    .map(([id, name]) => ({ id, name }))
-    .sort((a, b) => a.name.localeCompare(b.name));
+  // = the roster (site_state) + anyone who has uploaded a photo but isn't on it any more
+  const [{ data: all }, { data: st }] = await Promise.all([
+    sb.from("parchi_photos").select("driver_id,driver_name").range(0, 9999),
+    sb.from("site_state").select("drivers:state->drivers").eq("site_id", SITE.id).maybeSingle(),
+  ]);
+  const roster = (st?.drivers ?? []) as { id: string; name: string; nameHi?: string }[];
+  const byId = new Map<string, { id: string; name: string; nameHi?: string }>();
+  for (const r of all ?? []) byId.set(r.driver_id, { id: r.driver_id, name: r.driver_name });
+  for (const d of roster) byId.set(d.id, { id: d.id, name: d.name, nameHi: d.nameHi });
+  const drivers = [...byId.values()].sort((a, b) => a.name.localeCompare(b.name));
 
   // short-lived signed photo URLs (private bucket) for the Approvals viewer
   const rows = data ?? [];

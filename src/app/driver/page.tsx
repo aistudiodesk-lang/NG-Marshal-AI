@@ -6,6 +6,7 @@ import { useApp } from "@/lib/store";
 import { getIdentity, setIdentity, clearIdentity } from "@/lib/identity";
 import { uploadParchi, todayStats, tripHistory } from "@/lib/parchi";
 import { Wordmark } from "@/components/Brand";
+import DriverPicker from "@/components/DriverPicker";
 
 // Dead-simple parchi collector. Two screens only:
 //   1) LOGIN  — pick your name → in. No ITV, no phone, no password, no logout.
@@ -17,22 +18,6 @@ import { Wordmark } from "@/components/Brand";
 // Revenue is still computed + stored server-side and shown to the office on /dashboard.
 // Flip to true to bring the ₹ tile + celebration popup back for drivers.
 const SHOW_DRIVER_REVENUE = false;
-
-// small dark select
-function Sel({ value, onChange, children, className = "" }: { value: string; onChange: (v: string) => void; children: React.ReactNode; className?: string }) {
-  return (
-    <div className={`relative ${className}`}>
-      <select
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        className="w-full bg-[#101A28] border-2 border-[#2A3A50] text-[#EAF0F8] font-bold rounded-xl px-3 py-3.5 appearance-none text-[20px] text-center"
-      >
-        {children}
-      </select>
-      <span className="absolute right-3 top-1/2 -translate-y-1/2 text-[#8FA0B5] text-[14px] pointer-events-none">▾</span>
-    </div>
-  );
-}
 
 export default function DriverPage() {
   const [me, setMe] = useState<{ id: string; name: string } | null>(null);
@@ -91,12 +76,7 @@ function Login({ onLogin }: { onLogin: (d: { id: string; name: string }) => void
         <p className="text-[12px] text-[#8FA0B5] mt-1">choose your name to start</p>
       </div>
 
-      <Sel value={driverId} onChange={setDriverId}>
-        <option value="" disabled>नाम चुनो · choose name</option>
-        {drivers.map((d) => (
-          <option key={d.id} value={d.id}>{d.nameHi || d.name}</option>
-        ))}
-      </Sel>
+      <DriverPicker dark drivers={drivers} value={driverId} onPick={setDriverId} />
 
       <button
         onClick={start}
